@@ -1,0 +1,957 @@
+mod hlpp_text
+mod hlpp_num
+mod hlpp_map
+mod hlpp_ops
+mod hlpp_prog
+mod hlpp_sys
+mod hlpp_vm
+
+pub struct QR is
+    pub known: bool
+    pub out: string
+    pub code: int
+    pub raw: bool        ;; true: print without trailing newline
+end
+
+fn qr(out: string) -> QR is
+    return QR { known: true, out: out, code: 0, raw: false }
+end
+
+fn qrc(out: string, code: int) -> QR is
+    return QR { known: true, out: out, code: code, raw: false }
+end
+
+fn b2s(b: bool) -> string is
+    if b is return "true" end
+    return "false"
+end
+
+fn code_of(b: bool) -> int is
+    if b is return 0 end
+    return 1
+end
+
+fn pnum(s: string) -> hlpp_num::Num is
+    return hlpp_num::val_or0(string_trim(s))
+end
+
+;; string reverse by code points
+fn rev_str(s: string) -> string is
+    let c128: int = 128
+    let c192: int = 192
+    let n: int = string_len(s)
+    let mut r: string = ""
+    let mut i: int = n
+    while i > 0 is
+        let mut j: int = i - 1
+        ;; step back over UTF-8 continuation bytes
+        let bs: [int] = string_to_bytes(s)
+        while j > 0 && bs[j] >= c128 && bs[j] < c192 is j -= 1 end
+        r = r + string_slice(s, j, i)
+        i = j
+    end
+    return r
+end
+
+fn rev_str_fast(s: string) -> string is
+    let c128: int = 128
+    let c192: int = 192
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut r: string = ""
+    let mut i: int = n
+    while i > 0 is
+        let mut j: int = i - 1
+        while j > 0 && bs[j] >= c128 && bs[j] < c192 is j -= 1 end
+        r = r + string_slice(s, j, i)
+        i = j
+    end
+    return r
+end
+
+fn split_lines(s: string) -> [string] is
+    let mut out: [string] = []
+    let mut st: int = 0
+    let n: int = string_len(s)
+    let bs: [int] = string_to_bytes(s)
+    let mut i: int = 0
+    while i < n is
+        if bs[i] == 10 is
+            let mut e: int = i
+            if e > st && bs[e - 1] == 13 is e -= 1 end
+            out = array_push(out, string_slice(s, st, e))
+            st = i + 1
+        end
+        i += 1
+    end
+    if st < n is out = array_push(out, string_slice(s, st, n)) end
+    return out
+end
+
+fn split_by(s: string, sep: string) -> [string] is
+    let mut out: [string] = []
+    let sl: int = string_len(sep)
+    if sl == 0 is
+        return [s]
+    end
+    let mut from: int = 0
+    while true is
+        let rest: string = string_slice(s, from, string_len(s))
+        let k: int = string_find(rest, sep)
+        if k < 0 is
+            out = array_push(out, rest)
+            break
+        end
+        out = array_push(out, string_slice(rest, 0, k))
+        from = from + k + sl
+    end
+    return out
+end
+
+fn today_fmt(fmt: string) -> string is
+    let r: hlpp_sys::Res = hlpp_sys::run_shell("date +" + fmt, hlpp_sys::shell_program(), true)
+    return string_trim(r.out)
+end
+
+;; Evaluate a quick function without printing. Needs the VM for set/get/type/unset.
+pub fn quick_eval(vm: hlpp_vm::VM, name: string, raw_arg: string) -> QR is
+    let a: string = string_trim(raw_arg)
+    if name == "upper" is return qr(hlpp_text::up(a)) end
+    if name == "lower" is return qr(hlpp_text::low(a)) end
+    if name == "len" is
+        let l: int = string_len(a)
+        return qr(to_string(l))
+    end
+    if name == "trim" is return qr(a) end
+    if name == "rev" is return qr(rev_str_fast(a)) end
+    if name == "repeat" is
+        let sp: [string] = hlpp_text::split_last(a)
+        let n: int = hlpp_text::int_or(sp[1], 1)
+        return qr(hlpp_text::repeat_str(sp[0], n))
+    end
+    if name == "replace" is
+        let ws: [string] = hlpp_text::words(a)
+        ;; splitn(3, ' ') semantics
+        let f1: int = string_find(a, " ")
+        if f1 < 0 is
+            hlpp_vm::fail(vm, ":: replace wymaga: :: replace <text> <from> <to>")
+            return QR { known: true, out: "", code: 1, raw: false }
+        end
+        let rest: string = string_slice(a, f1 + 1, string_len(a))
+        let f2: int = string_find(rest, " ")
+        if f2 < 0 is
+            hlpp_vm::fail(vm, ":: replace wymaga: :: replace <text> <from> <to>")
+            return QR { known: true, out: "", code: 1, raw: false }
+        end
+        let text: string = string_slice(a, 0, f1)
+        let from: string = string_slice(rest, 0, f2)
+        let to: string = string_slice(rest, f2 + 1, string_len(rest))
+        return qr(string_replace_all(text, from, to))
+    end
+    if name == "contains" || name == "startswith" || name == "endswith" is
+        let sp: [string] = hlpp_text::split_last(a)
+        let mut r: bool = false
+        if name == "contains" is r = string_find(sp[0], sp[1]) >= 0 end
+        if name == "startswith" is r = string_starts_with(sp[0], sp[1]) end
+        if name == "endswith" is r = string_ends_with(sp[0], sp[1]) end
+        hlpp_vm::set_dyn(vm, "_last_bool", b2s(r), 3)
+        return qrc(b2s(r), code_of(r))
+    end
+    if name == "split" is
+        let sp: [string] = hlpp_text::split_last(a)
+        return qr(hlpp_text::join(split_by(sp[0], sp[1]), "\n"))
+    end
+    if name == "lines" is return qr(hlpp_text::join(split_lines(a), "\n")) end
+    if name == "words" is return qr(hlpp_text::join(hlpp_text::words(a), "\n")) end
+    if name == "abs" is return qr(hlpp_num::fmt(hlpp_num::abs(pnum(a)))) end
+    if name == "ceil" is
+        let v: int = hlpp_num::ceil_i(pnum(a))
+        return qr(to_string(v))
+    end
+    if name == "floor" is
+        let v: int = hlpp_num::floor_i(pnum(a))
+        return qr(to_string(v))
+    end
+    if name == "round" is
+        let v: int = hlpp_num::round_i(pnum(a))
+        return qr(to_string(v))
+    end
+    if name == "max" || name == "min" is
+        let sp: [string] = hlpp_text::split_last(a)
+        let x: hlpp_num::Num = pnum(sp[0])
+        let y: hlpp_num::Num = pnum(sp[1])
+        let c: int = hlpp_num::cmp(x, y)
+        if name == "max" is
+            if c > 0 is return qr(hlpp_num::fmt(x)) end
+            return qr(hlpp_num::fmt(y))
+        end
+        if c < 0 is return qr(hlpp_num::fmt(x)) end
+        return qr(hlpp_num::fmt(y))
+    end
+    if name == "rand" is
+        let t: int = hlpp_sys::now_ms()
+        let mut x: int = (t * 1103515245 + 12345) % 2147483648
+        if x < 0 is x = 0 - x end
+        let r: int = x % 100
+        return qr(to_string(r))
+    end
+    if name == "env" is
+        let has: bool = hlpp_sys::has_env(a)
+        return qrc(hlpp_sys::getenv(a), code_of(has))
+    end
+    if name == "getenv" is
+        let has2: bool = hlpp_sys::has_env(a)
+        let mut q: QR = qrc(hlpp_sys::getenv(a), code_of(has2))
+        q.raw = true
+        return q
+    end
+    if name == "env-path" is
+        let ap: string = hlpp_sys::getenv("HL_ACTIVE_ENV_PATH")
+        return qrc(ap, code_of(string_len(ap) > 0))
+    end
+    if name == "date" is return qr(today_fmt("%Y-%m-%d")) end
+    if name == "time" is return qr(today_fmt("%H:%M:%S")) end
+    if name == "pid" is
+        let pd: int = hlpp_sys::pid()
+        return qr(to_string(pd))
+    end
+    if name == "which" is
+        let w: string = hlpp_sys::which_path(a)
+        return qrc(w, code_of(string_len(w) > 0))
+    end
+    if name == "exists" || name == "isdir" || name == "isfile" is
+        let mut e: bool = hlpp_sys::exists(a)
+        if name == "isdir" is e = hlpp_sys::is_dir(a) end
+        if name == "isfile" is e = hlpp_sys::is_file(a) end
+        hlpp_vm::set_dyn(vm, "_last_bool", b2s(e), 3)
+        let mut q2: QR = qrc("", code_of(e))
+        q2.raw = true
+        return q2
+    end
+    if name == "basename" is return qr(hlpp_text::basename(a)) end
+    if name == "dirname" is return qr(hlpp_text::dirname(a)) end
+    if name == "read" is
+        if !hlpp_sys::is_file(a) is
+            hlpp_vm::fail(vm, ":: read '" + a + "': nie można odczytać pliku")
+            return QR { known: true, out: "", code: 1, raw: true }
+        end
+        let mut q3: QR = qr(hlpp_sys::read(a))
+        q3.raw = true
+        return q3
+    end
+    if name == "set" is
+        let f: int = string_find(a, " ")
+        if f < 0 is
+            hlpp_vm::set_dyn(vm, a, "", 1)
+        else is
+            hlpp_vm::set_dyn(vm, string_trim(string_slice(a, 0, f)), string_trim(string_slice(a, f + 1, string_len(a))), 1)
+        end
+        let mut q4: QR = qr("")
+        q4.raw = true
+        return q4
+    end
+    if name == "get" is return qr(hlpp_vm::get_dyn(vm, a)) end
+    if name == "type" is
+        let s: int = hlpp_vm::find_slot(vm, a)
+        if s < 0 is return qr("nil") end
+        let t: int = vm.vt[s]
+        return qr(hlpp_vm::type_name(t))
+    end
+    if name == "unset" is
+        let s2: int = hlpp_vm::find_slot(vm, a)
+        if s2 >= 0 is hlpp_vm::unset_var(vm, s2) end
+        let mut q5: QR = qr("")
+        q5.raw = true
+        return q5
+    end
+    if name == "nl" is return qr("") end
+    if name == "hr" is
+        let w2: int = hlpp_text::int_or(a, 60)
+        return qr(hlpp_text::repeat_str("─", w2))
+    end
+    if name == "bold" is return qr("\u{1b}[1m" + a + "\u{1b}[0m") end
+    if name == "red" is return qr("\u{1b}[31m" + a + "\u{1b}[0m") end
+    if name == "green" is return qr("\u{1b}[32m" + a + "\u{1b}[0m") end
+    if name == "yellow" is return qr("\u{1b}[33m" + a + "\u{1b}[0m") end
+    if name == "cyan" is return qr("\u{1b}[36m" + a + "\u{1b}[0m") end
+    return QR { known: false, out: "", code: 1, raw: false }
+end
+
+;; ── commands ────────────────────────────────────────────────────────────────
+
+fn test_unary(flag: string, v: string) -> int is
+    if flag == "-n" is return code_of(string_len(v) > 0) end
+    if flag == "-z" is return code_of(string_len(v) == 0) end
+    if flag == "-e" is return code_of(hlpp_sys::exists(v)) end
+    if flag == "-f" is return code_of(hlpp_sys::is_file(v)) end
+    if flag == "-d" is return code_of(hlpp_sys::is_dir(v)) end
+    if flag == "-s" is return code_of(hlpp_sys::is_file(v) && string_len(hlpp_sys::read(v)) > 0) end
+    if flag == "-r" || flag == "-x" || flag == "-L" || flag == "-h" is return 99 end
+    return 98
+end
+
+fn ncmp(a: string, b: string, op: string) -> int is
+    let x: hlpp_num::Num = hlpp_num::val_or0(string_trim(a))
+    let y: hlpp_num::Num = hlpp_num::val_or0(string_trim(b))
+    let c: int = hlpp_num::cmp(x, y)
+    if op == "-eq" is return code_of(c == 0) end
+    if op == "-ne" is return code_of(c != 0) end
+    if op == "-lt" is return code_of(c < 0) end
+    if op == "-le" is return code_of(c <= 0) end
+    if op == "-gt" is return code_of(c > 0) end
+    return code_of(c >= 0)
+end
+
+;; builtin `test` / `[ ]`: returns -1 when not handled (falls through to the system)
+fn try_test(cmd: string) -> int is
+    let mut s: string = cmd
+    if string_starts_with(s, "[ ") && string_ends_with(s, " ]") is
+        s = string_trim(string_slice(s, 2, string_len(s) - 2))
+    else if string_starts_with(s, "test ") || s == "test" is
+        s = string_trim(string_slice(s, 4, string_len(s)))
+    else is
+        return 0 - 1
+    end
+    let t: [string] = hlpp_text::shell_words(s)
+    let n: int = array_len(t)
+    if n == 2 is
+        let r: int = test_unary(t[0], t[1])
+        if r >= 98 is return 0 - 1 end
+        return r
+    end
+    if n == 1 is
+        if t[0] == "-n" || t[0] == "-z" || string_len(t[0]) == 0 is return 1 end
+        return 0
+    end
+    if n == 3 is
+        let op: string = t[1]
+        if op == "=" || op == "==" is return code_of(t[0] == t[2]) end
+        if op == "!=" is return code_of(t[0] != t[2]) end
+        if op == "-eq" || op == "-ne" || op == "-lt" || op == "-le" || op == "-gt" || op == "-ge" is return ncmp(t[0], t[2], op) end
+    end
+    return 0 - 1
+end
+
+fn needs_shell(cmd: string) -> bool is
+    let b: [int] = string_to_bytes(cmd)
+    let n: int = array_len(b)
+    let mut i: int = 0
+    while i < n is
+        let c: int = b[i]
+        if c == 38 || c == 59 || c == 96 is return true end
+        if c == 124 && i + 1 < n && b[i + 1] != 62 is return true end
+        if c == 62 && i + 1 < n && (b[i + 1] == 62 || b[i + 1] == 32) is return true end
+        if c == 60 && i + 1 < n && b[i + 1] == 32 is return true end
+        if c == 36 && i + 1 < n && b[i + 1] == 40 is return true end
+        if c == 42 && i + 2 < n && b[i + 1] != 47 is return true end
+        i += 1
+    end
+    if string_find(cmd, "$HOME") >= 0 || string_find(cmd, "$USER") >= 0 || string_find(cmd, "$PATH") >= 0 is return true end
+    if string_find(cmd, "$1") >= 0 || string_find(cmd, "${") >= 0 is return true end
+    return false
+end
+
+pub fn finish_exit(vm: hlpp_vm::VM, code: int) is
+    vm.running = false
+    vm.exit_code = code
+end
+
+;; run one command line with hl semantics. mode: 0 plain 1 sudo 2 isolated 3 isolated+sudo (4..6 same + vars)
+pub fn run_command(vm: hlpp_vm::VM, raw: string, mode: int, capture: bool) -> hlpp_sys::Res is
+    let cmd: string = string_trim(raw)
+    let none: hlpp_sys::Res = hlpp_sys::Res { code: 0, out: "" }
+    if cmd == "exit" is
+        finish_exit(vm, 0)
+        return none
+    end
+    if string_starts_with(cmd, "exit ") is
+        let ec: int = hlpp_text::int_or(string_trim(string_slice(cmd, 5, string_len(cmd))), 1)
+        finish_exit(vm, ec)
+        return none
+    end
+    let tr: int = try_test(cmd)
+    if tr >= 0 is return hlpp_sys::Res { code: tr, out: "" } end
+    if cmd == "cd" || string_starts_with(cmd, "cd ") is
+        let tgt: string = string_trim(string_slice(cmd, 2, string_len(cmd)))
+        let mut dest: string = tgt
+        if string_len(tgt) == 0 is dest = hlpp_sys::home() end
+        if !needs_shell(cmd) is
+            if hlpp_sys::chdir_to(dest) is return none end
+            hlpp_vm::fail(vm, "cd: nie można przejść do '" + dest + "'")
+            return hlpp_sys::Res { code: 1, out: "" }
+        end
+    end
+    let mut sudo: bool = false
+    let mut iso: bool = false
+    if mode == 1 || mode == 3 || mode == 5 is sudo = true end
+    if mode == 2 || mode == 3 || mode == 6 is iso = true end
+    let sh: string = vm.shell
+    let win: bool = vm.win
+    let mut line: string = cmd
+    if needs_shell(cmd) is
+        let bq: string = hlpp_text::shq(cmd, false)
+        if iso && sudo is
+            line = "sudo unshare --mount --pid --net --fork -- bash -c " + bq
+        else if iso is
+            line = "unshare --mount --pid --net --fork -- bash -c " + bq
+        else if sudo is
+            line = "sudo bash -c " + bq
+        end
+    else is
+        let ws: [string] = hlpp_text::shell_words(cmd)
+        if array_len(ws) == 0 is return none end
+        let prog: string = ws[0]
+        if !sudo && !iso && string_find(prog, "/") < 0 && string_len(hlpp_sys::which_path(prog)) == 0 is
+            hlpp_vm::fail(vm, "nie udało się uruchomić komendy '" + cmd + "' — program '" + prog + "' nie znaleziony w PATH albo brak uprawnień do jego uruchomienia. Sprawdź, czy jest zainstalowany (`which " + prog + "`) i czy ścieżka do niego jest w $PATH tego procesu.")
+            return hlpp_sys::Res { code: 127, out: "" }
+        end
+        let mut q: string = ""
+        let mut i: int = 0
+        while i < array_len(ws) is
+            if i > 0 is q = q + " " end
+            q = q + hlpp_text::shq(ws[i], win)
+            i += 1
+        end
+        line = q
+        if iso is line = "unshare --mount --pid --net --fork -- " + q end
+        if sudo is line = "sudo " + line end
+    end
+    return hlpp_sys::run_shell(line, sh, capture)
+end
+
+;; ── conditions (hl eval_condition_fast) ─────────────────────────────────────
+
+pub fn cmp_values(op: int, l: string, r: string) -> bool is
+    if op == 0 is return l == r end
+    if op == 1 is return l != r end
+    let x: hlpp_num::Num = hlpp_num::val_or0(string_trim(l))
+    let y: hlpp_num::Num = hlpp_num::val_or0(string_trim(r))
+    let c: int = hlpp_num::cmp(x, y)
+    if op == 2 is return c >= 0 end
+    if op == 3 is return c <= 0 end
+    if op == 4 is return c > 0 end
+    return c < 0
+end
+
+;; truthiness of a plain condition string
+pub fn cond_string(vm: hlpp_vm::VM, c0: string) -> bool is
+    let c: string = string_trim(c0)
+    if string_len(c) == 0 is return false end
+    if c == "true" is return true end
+    if c == "false" is return false end
+    if string_starts_with(c, "@") is
+        let v: string = hlpp_vm::get_dyn(vm, string_slice(c, 1, string_len(c)))
+        return string_len(v) > 0 && v != "false" && v != "0"
+    end
+    let r: hlpp_sys::Res = hlpp_sys::run_shell(c, "sh", false)
+    return r.code == 0
+end
+
+;; ── builtin coreutils (/> ...) — pure H# port of the hl `coreutils` crate subset ──
+
+fn bi_cat(vm: hlpp_vm::VM, args: [string]) -> hlpp_sys::Res is
+    let mut out: string = ""
+    let mut code: int = 0
+    let mut i: int = 0
+    while i < array_len(args) is
+        if hlpp_sys::is_file(args[i]) is
+            out = out + hlpp_sys::read(args[i])
+        else is
+            hlpp_sys::err("cat: " + args[i] + ": brak pliku\n")
+            code = 1
+        end
+        i += 1
+    end
+    return hlpp_sys::Res { code: code, out: out }
+end
+
+fn bi_ls(args: [string]) -> hlpp_sys::Res is
+    let mut dir: string = "."
+    let mut all: bool = false
+    let mut i: int = 0
+    while i < array_len(args) is
+        if string_starts_with(args[i], "-") is
+            if string_find(args[i], "a") >= 0 is all = true end
+        else is
+            dir = args[i]
+        end
+        i += 1
+    end
+    if !hlpp_sys::exists(dir) is
+        hlpp_sys::err("ls: " + dir + ": brak pliku lub katalogu\n")
+        return hlpp_sys::Res { code: 2, out: "" }
+    end
+    if hlpp_sys::is_file(dir) is return hlpp_sys::Res { code: 0, out: dir + "\n" } end
+    let names: [string] = hlpp_sys::list_dir(dir)
+    let mut keep: [string] = []
+    let mut k: int = 0
+    while k < array_len(names) is
+        if all || !string_starts_with(names[k], ".") is keep = array_push(keep, names[k]) end
+        k += 1
+    end
+    keep = hlpp_text::sort_strs(keep)
+    let mut out: string = ""
+    let mut j: int = 0
+    while j < array_len(keep) is
+        out = out + keep[j] + "\n"
+        j += 1
+    end
+    return hlpp_sys::Res { code: 0, out: out }
+end
+
+fn bi_wc(args: [string]) -> hlpp_sys::Res is
+    let mut files: [string] = []
+    let mut mode: string = ""
+    let mut i: int = 0
+    while i < array_len(args) is
+        if string_starts_with(args[i], "-") is mode = args[i] else is files = array_push(files, args[i]) end
+        i += 1
+    end
+    let mut out: string = ""
+    let mut f: int = 0
+    while f < array_len(files) is
+        let d: string = hlpp_sys::read(files[f])
+        let l: int = array_len(split_lines(d))
+        let w: int = array_len(hlpp_text::words(d))
+        let c: int = string_len(d)
+        if mode == "-l" is out = out + to_string(l) + " " + files[f] + "\n"
+        else if mode == "-w" is out = out + to_string(w) + " " + files[f] + "\n"
+        else if mode == "-c" is out = out + to_string(c) + " " + files[f] + "\n"
+        else is out = out + to_string(l) + " " + to_string(w) + " " + to_string(c) + " " + files[f] + "\n" end
+        f += 1
+    end
+    return hlpp_sys::Res { code: 0, out: out }
+end
+
+fn bi_headtail(args: [string], head: bool) -> hlpp_sys::Res is
+    let mut n: int = 10
+    let mut file: string = ""
+    let mut i: int = 0
+    while i < array_len(args) is
+        if args[i] == "-n" && i + 1 < array_len(args) is
+            n = hlpp_text::int_or(args[i + 1], 10)
+            i += 1
+        else if string_starts_with(args[i], "-") && string_len(args[i]) > 1 is
+            n = hlpp_text::int_or(string_slice(args[i], 1, string_len(args[i])), 10)
+        else is
+            file = args[i]
+        end
+        i += 1
+    end
+    if !hlpp_sys::is_file(file) is
+        hlpp_sys::err("head/tail: " + file + ": brak pliku\n")
+        return hlpp_sys::Res { code: 1, out: "" }
+    end
+    let ls: [string] = split_lines(hlpp_sys::read(file))
+    let total: int = array_len(ls)
+    let mut st: int = 0
+    let mut en: int = total
+    if head is
+        if n < total is en = n end
+    else is
+        if n < total is st = total - n end
+    end
+    let mut out: string = ""
+    let mut k: int = st
+    while k < en is
+        out = out + ls[k] + "\n"
+        k += 1
+    end
+    return hlpp_sys::Res { code: 0, out: out }
+end
+
+fn bi_grep(args: [string]) -> hlpp_sys::Res is
+    let mut pat: string = ""
+    let mut files: [string] = []
+    let mut inv: bool = false
+    let mut icase: bool = false
+    let mut cnt: bool = false
+    let mut num: bool = false
+    let mut have: bool = false
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if string_starts_with(a, "-") && string_len(a) > 1 is
+            if string_find(a, "v") >= 0 is inv = true end
+            if string_find(a, "i") >= 0 is icase = true end
+            if string_find(a, "c") >= 0 is cnt = true end
+            if string_find(a, "n") >= 0 is num = true end
+        else if !have is
+            pat = a
+            have = true
+        else is
+            files = array_push(files, a)
+        end
+        i += 1
+    end
+    if icase is pat = hlpp_text::low(pat) end
+    let mut out: string = ""
+    let mut found: int = 0
+    let mut f: int = 0
+    while f < array_len(files) is
+        if !hlpp_sys::is_file(files[f]) is
+            hlpp_sys::err("grep: " + files[f] + ": brak pliku\n")
+        else is
+            let ls: [string] = split_lines(hlpp_sys::read(files[f]))
+            let mut k: int = 0
+            while k < array_len(ls) is
+                let mut hay: string = ls[k]
+                if icase is hay = hlpp_text::low(hay) end
+                let hit: bool = string_find(hay, pat) >= 0
+                if hit != inv is
+                    found += 1
+                    if !cnt is
+                        let mut pre: string = ""
+                        if array_len(files) > 1 is pre = files[f] + ":" end
+                        if num is pre = pre + to_string(k + 1) + ":" end
+                        out = out + pre + ls[k] + "\n"
+                    end
+                end
+                k += 1
+            end
+        end
+        f += 1
+    end
+    if cnt is out = to_string(found) + "\n" end
+    return hlpp_sys::Res { code: code_of(found > 0), out: out }
+end
+
+fn bi_sort_uniq(args: [string], uniq: bool) -> hlpp_sys::Res is
+    let mut file: string = ""
+    let mut i: int = 0
+    while i < array_len(args) is
+        if !string_starts_with(args[i], "-") is file = args[i] end
+        i += 1
+    end
+    let ls: [string] = split_lines(hlpp_sys::read(file))
+    let mut res: [string] = ls
+    if !uniq is res = hlpp_text::sort_strs(ls) end
+    let mut out: string = ""
+    let mut prev: string = ""
+    let mut first: bool = true
+    let mut k: int = 0
+    while k < array_len(res) is
+        if !uniq || first || res[k] != prev is out = out + res[k] + "\n" end
+        prev = res[k]
+        first = false
+        k += 1
+    end
+    return hlpp_sys::Res { code: 0, out: out }
+end
+
+fn bi_seq(args: [string]) -> hlpp_sys::Res is
+    let mut a: int = 1
+    let mut st: int = 1
+    let mut b: int = 1
+    if array_len(args) == 1 is b = hlpp_text::int_or(args[0], 1) end
+    if array_len(args) == 2 is
+        a = hlpp_text::int_or(args[0], 1)
+        b = hlpp_text::int_or(args[1], 1)
+    end
+    if array_len(args) >= 3 is
+        a = hlpp_text::int_or(args[0], 1)
+        st = hlpp_text::int_or(args[1], 1)
+        b = hlpp_text::int_or(args[2], 1)
+    end
+    if st == 0 is st = 1 end
+    let mut out: string = ""
+    let mut v: int = a
+    while (st > 0 && v <= b) || (st < 0 && v >= b) is
+        out = out + to_string(v) + "\n"
+        v += st
+    end
+    return hlpp_sys::Res { code: 0, out: out }
+end
+
+fn bi_touch_mkdir_rm(cmd: string, args: [string]) -> hlpp_sys::Res is
+    let mut code: int = 0
+    let mut rec: bool = false
+    let mut force: bool = false
+    let mut paths: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if string_starts_with(a, "-") && string_len(a) > 1 is
+            if string_find(a, "r") >= 0 || string_find(a, "R") >= 0 || string_find(a, "p") >= 0 is rec = true end
+            if string_find(a, "f") >= 0 is force = true end
+        else is
+            paths = array_push(paths, a)
+        end
+        i += 1
+    end
+    let mut k: int = 0
+    while k < array_len(paths) is
+        let p: string = paths[k]
+        if cmd == "touch" is
+            if !hlpp_sys::exists(p) is hlpp_sys::write_text(p, "") end
+        else if cmd == "mkdir" is
+            let r: int = hlpp_sys::mkdir_p(p)
+            if r != 0 is code = 1 end
+        else is
+            if !hlpp_sys::exists(p) is
+                if !force is
+                    hlpp_sys::err("rm: " + p + ": brak pliku lub katalogu\n")
+                    code = 1
+                end
+            else is
+                let r2: int = hlpp_sys::remove_path(p, rec)
+                if r2 != 0 is code = 1 end
+            end
+        end
+        k += 1
+    end
+    return hlpp_sys::Res { code: code, out: "" }
+end
+
+;; `/> cmd args` — returns Res; known=false (code 127, out "") when the command is unknown
+pub fn run_builtin(vm: hlpp_vm::VM, raw: string) -> hlpp_sys::Res is
+    let ws: [string] = hlpp_text::shell_words(string_trim(raw))
+    if array_len(ws) == 0 is return hlpp_sys::Res { code: 0, out: "" } end
+    let cmd: string = ws[0]
+    let mut args: [string] = []
+    let mut i: int = 1
+    while i < array_len(ws) is
+        args = array_push(args, ws[i])
+        i += 1
+    end
+    if cmd == "echo" is return hlpp_sys::Res { code: 0, out: hlpp_text::join(args, " ") + "\n" } end
+    if cmd == "cat" is return bi_cat(vm, args) end
+    if cmd == "ls" is return bi_ls(args) end
+    if cmd == "wc" is return bi_wc(args) end
+    if cmd == "head" is return bi_headtail(args, true) end
+    if cmd == "tail" is return bi_headtail(args, false) end
+    if cmd == "grep" is return bi_grep(args) end
+    if cmd == "sort" is return bi_sort_uniq(args, false) end
+    if cmd == "uniq" is return bi_sort_uniq(args, true) end
+    if cmd == "seq" is return bi_seq(args) end
+    if cmd == "touch" || cmd == "mkdir" || cmd == "rm" is return bi_touch_mkdir_rm(cmd, args) end
+    if cmd == "cp" && array_len(args) >= 2 is
+        let r: int = hlpp_sys::copy_path(args[array_len(args) - 2], args[array_len(args) - 1])
+        return hlpp_sys::Res { code: code_of(r == 0), out: "" }
+    end
+    if cmd == "mv" && array_len(args) >= 2 is
+        let r2: int = hlpp_sys::move_path(args[array_len(args) - 2], args[array_len(args) - 1])
+        return hlpp_sys::Res { code: code_of(r2 == 0), out: "" }
+    end
+    if cmd == "pwd" is return hlpp_sys::Res { code: 0, out: cwd() + "\n" } end
+    if cmd == "basename" && array_len(args) >= 1 is return hlpp_sys::Res { code: 0, out: hlpp_text::basename(args[0]) + "\n" } end
+    if cmd == "dirname" && array_len(args) >= 1 is return hlpp_sys::Res { code: 0, out: hlpp_text::dirname(args[0]) + "\n" } end
+    if cmd == "rev" is return hlpp_sys::Res { code: 0, out: rev_str_fast(hlpp_text::join(args, " ")) + "\n" } end
+    if cmd == "which" && array_len(args) >= 1 is
+        let w: string = hlpp_sys::which_path(args[0])
+        return hlpp_sys::Res { code: code_of(string_len(w) > 0), out: w + "\n" }
+    end
+    if cmd == "sleep" is
+        let ms: int = hlpp_text::int_or(args[0], 0) * 1000
+        hlpp_sys::sleep_secs(ms)
+        return hlpp_sys::Res { code: 0, out: "" }
+    end
+    if cmd == "true" is return hlpp_sys::Res { code: 0, out: "" } end
+    if cmd == "false" is return hlpp_sys::Res { code: 1, out: "" } end
+    if cmd == "env" && array_len(args) == 0 is return hlpp_sys::Res { code: 0, out: "" } end
+    ;; everything else the hl coreutils crate knows (find, cp -r, date, stat, du, chmod, tr, cut, printf, xargs, tee…)
+    ;; delegates to the system tool of the same name (documented in docs/SEMANTICS.md)
+    let known: bool = cmd == "find" || cmd == "date" || cmd == "stat" || cmd == "du" || cmd == "chmod" || cmd == "tr" || cmd == "cut" || cmd == "printf" || cmd == "yes" || cmd == "tee" || cmd == "xargs"
+    if known is
+        return hlpp_sys::run_shell(string_trim(raw), vm.shell, true)
+    end
+    hlpp_sys::err("\u{1b}[31m[/>]\u{1b}[0m [/>] nieznana komenda: '" + cmd + "'. Użyj > dla zewnętrznych narzędzi.\n")
+    return hlpp_sys::Res { code: 1, out: "" }
+end
+
+;; ── run-time interpolation (used by fallbacks: arithmetic via shell, switch patterns, hsh) ──
+pub fn interp(vm: hlpp_vm::VM, s: string) -> string is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut out: string = ""
+    let mut i: int = 0
+    let mut ls: int = 0
+    while i < n is
+        if bs[i] == 64 && i + 1 < n is
+            let nx: int = bs[i + 1]
+            if nx == 123 is
+                out = out + string_slice(s, ls, i)
+                let st: int = i + 2
+                let mut e: int = st
+                while e < n && bs[e] != 125 is e += 1 end
+                out = out + hlpp_vm::get_dyn(vm, interp(vm, string_slice(s, st, e)))
+                i = e + 1
+                ls = i
+                continue
+            end
+            if hlpp_text::is_alpha_b(nx) || nx == 95 is
+                out = out + string_slice(s, ls, i)
+                let st2: int = i + 1
+                let mut e2: int = st2
+                while e2 < n && hlpp_text::is_ident_b(bs[e2]) is e2 += 1 end
+                let mut name: string = string_slice(s, st2, e2)
+                while e2 + 1 < n && bs[e2] == 64 && (hlpp_text::is_alpha_b(bs[e2 + 1]) || bs[e2 + 1] == 95) is
+                    let st3: int = e2 + 1
+                    e2 = st3
+                    while e2 < n && hlpp_text::is_ident_b(bs[e2]) is e2 += 1 end
+                    name = name + "\u{0}" + string_slice(s, st3, e2)
+                end
+                if string_find(name, "\u{0}") >= 0 is
+                    let parts: [string] = hlpp_text::words_by(name, "\u{0}")
+                    let mut cat: string = ""
+                    let mut k: int = 0
+                    while k < array_len(parts) is
+                        cat = cat + hlpp_vm::get_dyn(vm, parts[k])
+                        k += 1
+                    end
+                    out = out + hlpp_vm::get_dyn(vm, cat)
+                else is
+                    out = out + hlpp_vm::get_dyn(vm, name)
+                end
+                i = e2
+                ls = i
+                continue
+            end
+        end
+        i += 1
+    end
+    return out + string_slice(s, ls, n)
+end
+
+;; `echo $(( expr ))` through the system shell (hl eval_arithmetic_shell)
+pub fn arith_shell(vm: hlpp_vm::VM, expr: string) -> string is
+    if vm.win is return "0" end
+    let r: hlpp_sys::Res = hlpp_sys::run_shell("echo $(( " + expr + " ))", "sh", true)
+    if r.code == 0 is
+        let t: string = string_trim(r.out)
+        if (string_len(t) > 0 && t != "0") || string_trim(expr) == "0" is return t end
+    end
+    return "0"
+end
+
+;; ── dependency check (`// tool [apt-pkg]`) ──────────────────────────────────
+pub fn dep_check(vm: hlpp_vm::VM, bin0: string, apt: string) -> int is
+    let bin: string = string_trim(bin0)
+    if string_len(hlpp_sys::which_path(bin)) > 0 is return 0 end
+    let mut pkg: string = bin
+    if string_len(apt) > 0 is pkg = apt end
+    if hlpp_sys::getenv("HL_INSTALL_DEPS") != "1" is
+        hlpp_sys::err("\u{1b}[33m[hl dep]\u{1b}[0m brak '" + bin + "'  (pakiet: " + pkg + ")  →  apt install " + pkg + "\n")
+        return 0
+    end
+    hlpp_sys::err("\u{1b}[33m[hl dep]\u{1b}[0m '" + bin + "' nie znalezione — instaluję: apt install " + pkg + "...\n")
+    let mut ok: bool = false
+    if string_len(hlpp_sys::which_path("apt-get")) > 0 is
+        let r: hlpp_sys::Res = hlpp_sys::run_shell("sudo apt-get -y install " + hlpp_sys::quote(pkg), vm.shell, false)
+        ok = r.code == 0
+    end
+    if !ok && string_len(hlpp_sys::which_path("lpm")) > 0 is
+        let r2: hlpp_sys::Res = hlpp_sys::run_shell("sudo lpm install " + hlpp_sys::quote(pkg), vm.shell, false)
+        ok = r2.code == 0
+    end
+    if ok is
+        hlpp_sys::err("\u{1b}[32m[hl dep]\u{1b}[0m '" + bin + "' zainstalowane.\n")
+        return 0
+    end
+    hlpp_sys::err("\u{1b}[31m[hl dep]\u{1b}[0m nie udało się zainstalować '" + pkg + "'.\n")
+    return 1
+end
+
+;; ── extern blocks: shell / python / java / elf (.so needs dlopen+fn pointers: not expressible in H#) ──
+fn libs_lookup(file: string) -> string is
+    let b: string = hlpp_sys::getenv("BIT_HOME")
+    let mut base: string = hlpp_sys::home() + "/.hackeros/libs"
+    if string_len(b) > 0 is base = b end
+    let c: string = base + "/" + file
+    if hlpp_sys::exists(c) is return c end
+    return ""
+end
+
+pub fn run_extern(vm: hlpp_vm::VM, file0: string, runtime: string) -> int is
+    let file: string = interp(vm, file0)
+    let mut resolved: string = file
+    if !hlpp_text::starts(file, "/") && string_find(file, "/") < 0 && !hlpp_sys::exists(file) is
+        let lp: string = libs_lookup(file)
+        if string_len(lp) > 0 is
+            resolved = lp
+        else if runtime == "elf" is
+            let w: string = hlpp_sys::which_path(file)
+            if string_len(w) > 0 is resolved = w end
+        end
+    end
+    let mut args: string = ""
+    let mut i: int = 0
+    while true is
+        let k: string = "_arg_" + to_string(i)
+        let v: string = hlpp_vm::get_dyn(vm, k)
+        if string_len(v) == 0 is break end
+        args = args + " " + hlpp_sys::quote(v)
+        i += 1
+    end
+    let mut envp: string = ""
+    let mut s: int = 0
+    while s < array_len(vm.p.names) is
+        let nm: string = vm.p.names[s]
+        if string_starts_with(nm, "_env_") && vm.vt[s] != 0 is
+            envp = envp + string_slice(nm, 5, string_len(nm)) + "=" + hlpp_sys::quote(hlpp_vm::get_var(vm, s)) + " "
+        end
+        s += 1
+    end
+    let mut cmd: string = ""
+    if runtime == "shell" is
+        let shp: string = hlpp_vm::get_dyn(vm, "HL_SHELL")
+        let mut sh: string = "bash"
+        if string_len(shp) > 0 is sh = shp end
+        if string_len(resolved) > 0 && !hlpp_sys::exists(resolved) is
+            if string_find(resolved, "/") >= 0 is
+                hlpp_vm::fail(vm, "[extern shell] Skrypt nie istnieje: '" + resolved + "'")
+                return 1
+            end
+            cmd = hlpp_sys::quote(resolved) + args
+        else is
+            cmd = sh + " " + hlpp_sys::quote(resolved) + args
+        end
+    else if runtime == "python" is
+        let mut py: string = "python3"
+        if string_len(hlpp_sys::which_path(py)) == 0 is
+            hlpp_vm::fail(vm, "[extern python] 'python3' nie znaleziony.\nZainstaluj: sudo apt install python3")
+            return 1
+        end
+        cmd = py + " " + hlpp_sys::quote(resolved) + args
+    else if runtime == "java" is
+        if string_len(hlpp_sys::which_path("java")) == 0 is
+            hlpp_vm::fail(vm, "[extern java] 'java' nie znaleziony.\nZainstaluj: sudo apt install default-jre")
+            return 1
+        end
+        if string_ends_with(resolved, ".jar") is
+            cmd = "java -jar " + hlpp_sys::quote(resolved) + args
+        else is
+            cmd = "java " + hlpp_sys::quote(resolved) + args
+        end
+    else if runtime == "elf" is
+        if string_len(resolved) == 0 is
+            hlpp_vm::fail(vm, "[extern elf] Brak nazwy binarki")
+            return 1
+        end
+        if string_find(resolved, "/") < 0 && string_len(hlpp_sys::which_path(resolved)) == 0 is
+            hlpp_vm::fail(vm, "[extern elf] Binarka '" + resolved + "' nie znaleziona w PATH.\nSprawdź ścieżkę lub dodaj do PATH.")
+            return 1
+        end
+        cmd = hlpp_sys::quote(resolved) + args
+    else is
+        hlpp_vm::fail(vm, "[extern so] Ładowanie bibliotek .so (dlopen + wskaźnik funkcji) nie jest możliwe w czystym H# — zob. docs/HLIB_FINDINGS.md (W-04). Użyj `extern elf` albo bit workspace z natywnym mostem.")
+        return 1
+    end
+    let r: hlpp_sys::Res = hlpp_sys::run_shell(envp + cmd, "sh", false)
+    hlpp_vm::set_dyn(vm, "_extern_result", "", 1)
+    hlpp_vm::set_dyn(vm, "_extern_exit", to_string(r.code), 2)
+    return r.code
+end
+
+;; HackerOS tool wrappers (`|| tool args`)
+pub fn run_hos(vm: hlpp_vm::VM, tool: string, args: string) -> int is
+    if string_len(hlpp_sys::which_path(tool)) == 0 is
+        hlpp_sys::err("\u{1b}[33m[hl ||]\u{1b}[0m Narzędzie '" + tool + "' nie jest zainstalowane.\n")
+        return 127
+    end
+    let a: string = string_trim(args)
+    let mut line: string = tool
+    if string_len(a) > 0 is line = tool + " " + a end
+    let r: hlpp_sys::Res = run_command(vm, line, 0, false)
+    return r.code
+end

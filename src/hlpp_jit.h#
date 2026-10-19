@@ -1,0 +1,7 @@
+pub fn available() -> bool is
+    return false
+end
+
+pub fn status() -> string is
+    return "tier-1 bytecode VM; tier-2 cranelift: niedostępny (feature jit-cranelift wyłączony)"
+end

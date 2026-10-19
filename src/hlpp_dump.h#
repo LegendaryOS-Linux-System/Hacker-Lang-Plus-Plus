@@ -1,0 +1,43 @@
+mod hlpp_ops
+mod hlpp_prog
+mod hlpp_sys
+
+fn pad(s: string, w: int) -> string is
+    let mut r: string = s
+    while string_len(r) < w is r = r + " " end
+    return r
+end
+
+fn show(p: hlpp_prog::Prog, op: int, a: int, b: int, c: int) -> string is
+    let nm: string = hlpp_ops::op_name(op)
+    let mut t: string = pad(nm, 10)
+    if op == hlpp_ops::op_lit() || op == hlpp_ops::op_printlit() is
+        t = t + " \"" + string_replace_all(p.lits[a], "\n", "\\n") + "\""
+    else if op == hlpp_ops::op_var() || op == hlpp_ops::op_varprint() || op == hlpp_ops::op_nvar() is
+        t = t + " @" + p.names[a]
+    else if op == hlpp_ops::op_set() is
+        t = t + " @" + p.names[a]
+    else if op == hlpp_ops::op_setlit() is
+        t = t + " @" + p.names[a] + " = \"" + p.lits[b] + "\""
+    else if op == hlpp_ops::op_nlit() || op == hlpp_ops::op_call() || op == hlpp_ops::op_quick() || op == hlpp_ops::op_callarena() is
+        t = t + " " + p.lits[a]
+    else is
+        t = t + " " + to_string(a) + " " + to_string(b) + " " + to_string(c)
+    end
+    return t
+end
+
+pub fn dump(p: hlpp_prog::Prog) is
+    let n: int = hlpp_prog::here(p)
+    let mut i: int = 0
+    while i < n is
+        let base: int = i * 4
+        let ln: int = p.lines[i]
+        let op: int = p.code[base]
+        let a: int = p.code[base + 1]
+        let b: int = p.code[base + 2]
+        let c: int = p.code[base + 3]
+        hlpp_sys::outln(pad(to_string(i), 5) + " L" + pad(to_string(ln), 4) + " " + show(p, op, a, b, c))
+        i += 1
+    end
+end

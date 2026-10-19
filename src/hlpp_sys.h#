@@ -1,0 +1,284 @@
+use "std -> fs" from "fs"
+use "std -> io" from "io"
+mod hlpp_text
+
+extern static [c] is
+    fn system(cmd: string) -> int
+    fn dprintf(fd: int, fmt: string, s: string) -> int
+    fn fork() -> int
+    fn _exit(code: int)
+    fn kill(pid: int, sig: int) -> int
+end
+
+pub struct Res is
+    pub code: int
+    pub out: string
+end
+
+pub fn platform_name() -> string is
+    return platform()
+end
+
+pub fn is_windows() -> bool is
+    return platform() == "windows"
+end
+
+pub fn flush_out() is
+    io::flush()
+end
+
+pub fn out(s: string) is
+    io::write_no_nl(s)
+end
+
+pub fn outln(s: string) is
+    write(s)
+end
+
+pub fn err(s: string) is
+    io::flush()
+    let r: int = dprintf(2, "%s", s)
+end
+
+pub fn temp_dir() -> string is
+    let t: string = env_get("TMPDIR")
+    if string_len(t) > 0 is return t end
+    if is_windows() is
+        let w: string = env_get("TEMP")
+        if string_len(w) > 0 is return w end
+        return "C:\\Windows\\Temp"
+    end
+    return "/tmp"
+end
+
+pub fn path_sep() -> string is
+    if is_windows() is return "\\" end
+    return "/"
+end
+
+pub fn quote(s: string) -> string is
+    return hlpp_text::shq(s, is_windows())
+end
+
+;; wait-status -> exit code
+pub fn decode(st: int) -> int is
+    if st < 0 is return 127 end
+    if is_windows() is return st end
+    let sig: int = st % 128
+    if sig != 0 is return 128 + sig end
+    return (st / 256) % 256
+end
+
+pub fn exists(p: string) -> bool is
+    return fs::exists(p)
+end
+
+pub fn is_dir(p: string) -> bool is
+    return fs::is_dir(p)
+end
+
+pub fn is_file(p: string) -> bool is
+    return fs::is_file(p)
+end
+
+pub fn read(p: string) -> string is
+    return fs::read(p)
+end
+
+pub fn write_text(p: string, data: string) is
+    fs::write(p, data)
+end
+
+pub fn append_text(p: string, data: string) is
+    fs::append(p, data)
+end
+
+pub fn list_dir(p: string) -> [string] is
+    return fs::list_dir(p)
+end
+
+pub fn mkdir_p(p: string) -> int is
+    if is_windows() is return decode(system("mkdir " + quote(p))) end
+    return decode(system("mkdir -p " + quote(p)))
+end
+
+pub fn remove_path(p: string, recursive: bool) -> int is
+    if is_windows() is
+        if recursive is return decode(system("rmdir /S /Q " + quote(p))) end
+        return decode(system("del /Q " + quote(p)))
+    end
+    if recursive is return decode(system("rm -rf " + quote(p))) end
+    return decode(system("rm -f " + quote(p)))
+end
+
+pub fn copy_path(a: string, b: string) -> int is
+    if is_windows() is return decode(system("copy /Y " + quote(a) + " " + quote(b))) end
+    return decode(system("cp -r " + quote(a) + " " + quote(b)))
+end
+
+pub fn move_path(a: string, b: string) -> int is
+    if is_windows() is return decode(system("move /Y " + quote(a) + " " + quote(b))) end
+    return decode(system("mv " + quote(a) + " " + quote(b)))
+end
+
+pub fn chdir_to(p: string) -> bool is
+    if !fs::is_dir(p) is return false end
+    fs::chdir(p)
+    return true
+end
+
+pub fn home() -> string is
+    let h: string = env_get("HOME")
+    if string_len(h) > 0 is return h end
+    let u: string = env_get("USERPROFILE")
+    if string_len(u) > 0 is return u end
+    return "/tmp"
+end
+
+;; PATH lookup (honours PATHEXT on Windows)
+pub fn which_path(name: string) -> string is
+    if string_len(name) == 0 is return "" end
+    if string_contains(name, "/") || string_contains(name, "\\") is
+        if fs::is_file(name) is return name end
+        return ""
+    end
+    let win: bool = is_windows()
+    let mut sep: string = ":"
+    let mut ds: string = "/"
+    if win is
+        sep = ";"
+        ds = "\\"
+    end
+    let dirs: [string] = string_split(env_get("PATH"), sep)
+    let mut exts: [string] = [""]
+    if win is exts = [".exe", ".cmd", ".bat", ".com", ""] end
+    let mut i: int = 0
+    while i < array_len(dirs) is
+        if string_len(dirs[i]) > 0 is
+            let mut j: int = 0
+            while j < array_len(exts) is
+                let cand: string = dirs[i] + ds + name + exts[j]
+                if fs::is_file(cand) is return cand end
+                j += 1
+            end
+        end
+        i += 1
+    end
+    return ""
+end
+
+pub fn shell_program() -> string is
+    if is_windows() is return "cmd" end
+    if string_len(which_path("bash")) > 0 is return "bash" end
+    return "sh"
+end
+
+fn wrap(cmd: string, sh: string) -> string is
+    if sh == "cmd" is return "cmd /C " + quote(cmd) end
+    if is_windows() is return sh + " -c " + quote(cmd) end
+    return sh + " -c " + quote(cmd) + " </dev/null"
+end
+
+;; run through the platform shell; capture != false => stdout in .out (stderr passes through)
+pub fn run_shell(cmd: string, sh: string, capture: bool) -> Res is
+    io::flush()
+    let w: string = wrap(cmd, sh)
+    if !capture is
+        let st: int = system(w)
+        return Res { code: decode(st), out: "" }
+    end
+    let pid: int = proc_id()
+    let tmp: string = temp_dir() + path_sep() + "hlpp_" + to_string(pid) + "_" + to_string(time_ms()) + ".out"
+    let st: int = system(w + " > " + quote(tmp))
+    let mut data: string = ""
+    if fs::exists(tmp) is
+        data = fs::read(tmp)
+        fs::remove(tmp)
+    end
+    return Res { code: decode(st), out: data }
+end
+
+;; fire-and-forget background job; returns pid when the platform can tell, else 0
+pub fn spawn_bg(cmd: string, sh: string) -> int is
+    io::flush()
+    if is_windows() is
+        system("start /B " + wrap(cmd, sh))
+        return 0
+    end
+    let tmp: string = temp_dir() + "/hlpp_bg_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".pid"
+    system("(" + wrap(cmd, sh) + " </dev/null & echo $! > " + quote(tmp) + ")")
+    let mut pid: int = 0
+    if fs::exists(tmp) is
+        pid = hlpp_text::int_or(string_trim(fs::read(tmp)), 0)
+        fs::remove(tmp)
+    end
+    return pid
+end
+
+pub fn pid() -> int is
+    return proc_id()
+end
+
+pub fn now_ms() -> int is
+    return time_ms()
+end
+
+pub fn sleep_secs(ms: int) is
+    io::flush()
+    sleep_ms(ms)
+end
+
+pub fn getenv(k: string) -> string is
+    return env_get(k)
+end
+
+pub fn has_env(k: string) -> bool is
+    return string_len(env_get(k)) > 0
+end
+
+pub fn setenv(k: string, v: string) is
+    env_set(k, v)
+end
+
+;; run with the terminal's stdin (interactive tools such as hsh)
+pub fn run_tty(cmd: string) -> int is
+    io::flush()
+    let st: int = system(cmd)
+    return decode(st)
+end
+
+;; whole standard input (until EOF); used by the builtin filters (`/> sort`, `/> tr` …)
+pub fn read_stdin() -> string is
+    io::flush()
+    let tmp: string = temp_dir() + path_sep() + "hlpp_in_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".tmp"
+    let st: int = system("cat > " + quote(tmp))
+    let mut data: string = ""
+    if fs::exists(tmp) is
+        data = fs::read(tmp)
+        fs::remove(tmp)
+    end
+    return data
+end
+
+pub fn file_size(p: string) -> int is
+    return fs::size(p)
+end
+
+;; ── goroutines = isolated child processes (fork): true parallelism, hl's env-snapshot semantics ──
+pub fn can_fork() -> bool is
+    return !is_windows()
+end
+
+pub fn fork_proc() -> int is
+    io::flush()
+    return fork()
+end
+
+pub fn exit_now(code: int) is
+    io::flush()
+    _exit(code)
+end
+
+pub fn kill_proc(pid: int) is
+    let r: int = kill(pid, 15)
+end

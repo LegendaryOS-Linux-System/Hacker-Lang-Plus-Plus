@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# usage: tests/show.sh <file.hl>  — show stdout/stderr diff between hl and hlpp
+f=$1; d=$(dirname "$f"); b=$(basename "$f"); T=$(mktemp -d)
+(cd "$d" && HL_NOT_ON_HACKEROS=YES timeout 10 /home/claude/tools/hl-ref/target/release/hl run "$b" >"$T/e" 2>"$T/ee" </dev/null; echo "hl rc=$?")
+(cd "$d" && timeout 10 ${HLPP:-/tmp/hlpp} "$b" >"$T/g" 2>"$T/ge" </dev/null; echo "hlpp rc=$?")
+LC_ALL=C tr -cd '\000-\177' <"$T/e" >"$T/e2"; LC_ALL=C tr -cd '\000-\177' <"$T/g" >"$T/g2"
+diff "$T/e2" "$T/g2" | head -${N:-14}; echo "--- stderr (hl | hlpp)"; head -4 "$T/ee"; echo ...; head -4 "$T/ge"

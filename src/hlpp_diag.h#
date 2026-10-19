@@ -1,0 +1,85 @@
+use "bit -> colors"
+use "bit -> nidus" from "nidus"
+mod hlpp_text
+mod hlpp_sys
+mod hlpp_prog
+mod hlpp_vm
+
+pub fn brand() -> string is
+    return colors::bold(colors::bright_cyan("Hacker Lang++"))
+end
+
+pub fn ok(msg: string) is
+    hlpp_sys::outln(colors::green("✓ ") + msg)
+end
+
+pub fn info(msg: string) is
+    hlpp_sys::outln(colors::cyan("• ") + msg)
+end
+
+pub fn warn(msg: string) is
+    hlpp_sys::err(colors::yellow("! ") + msg + "\n")
+end
+
+pub fn plain_error(msg: string) is
+    hlpp_sys::err(colors::bold(colors::red("błąd: ")) + msg + "\n")
+end
+
+;; byte offset of the start of 1-based `line` in `src`, and its length (without the newline)
+fn line_span(src: string, line: int) -> [int] is
+    let bs: [int] = string_to_bytes(src)
+    let n: int = array_len(bs)
+    let mut cur: int = 1
+    let mut i: int = 0
+    let mut start: int = 0
+    while i < n && cur < line is
+        if bs[i] == 10 is
+            cur += 1
+            start = i + 1
+        end
+        i += 1
+    end
+    let mut e: int = start
+    while e < n && bs[e] != 10 is e += 1 end
+    ;; skip leading blanks so the caret hugs the statement
+    let mut s2: int = start
+    while s2 < e && (bs[s2] == 32 || bs[s2] == 9) is s2 += 1 end
+    if e <= s2 is return [start, 1] end
+    return [s2, e - s2]
+end
+
+pub fn report(file: string, src: string, line: int, code: string, msg: string, label: string, help: string) is
+    let mut d: nidus::diagnostic::Diagnostic = nidus::error(msg)
+    d = d.with_code(code)
+    d = d.with_source(file, src)
+    if line > 0 is
+        let sp: [int] = line_span(src, line)
+        d = d.with_label(nidus::primary_label(sp[0], sp[1], label))
+    end
+    if string_len(help) > 0 is d = d.with_help(help) end
+    hlpp_sys::err(nidus::render(d, nidus::config_default()) + "\n")
+end
+
+pub fn compile_errors(p: hlpp_prog::Prog, src: string) -> int is
+    let n: int = array_len(p.errs)
+    let mut i: int = 0
+    while i < n is
+        report(p.file, src, p.err_lines[i], "hlpp::compile", p.errs[i], "tutaj", "składnia: docs/LANGUAGE.md")
+        i += 1
+    end
+    return n
+end
+
+pub fn runtime_error(vm: hlpp_vm::VM, src: string, main_end: int) is
+    let mut line: int = 0
+    let mut label: string = "tu zatrzymano wykonanie"
+    if vm.err_pc >= 0 && vm.err_pc < main_end && vm.err_pc < array_len(vm.p.lines) is
+        line = vm.p.lines[vm.err_pc]
+    else is
+        label = "błąd w zaimportowanym module"
+    end
+    let mut help: string = ""
+    if string_find(vm.err, "echo") >= 0 is help = "w Hacker Lang `echo` jest zabronione — użyj `~> tekst`" end
+    if string_find(vm.err, "Niezdefiniowana") >= 0 is help = "zdefiniuj funkcję przed wywołaniem: `:nazwa def ... done`" end
+    report(vm.p.file, src, line, "hlpp::runtime", vm.err, label, help)
+end

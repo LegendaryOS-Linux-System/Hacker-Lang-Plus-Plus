@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Hacker Lang++
+Comment=Bytecode VM for Hacker Lang with OOP (LegendaryOS)
+Exec=hlpp repl
+Terminal=true
+Categories=Development;

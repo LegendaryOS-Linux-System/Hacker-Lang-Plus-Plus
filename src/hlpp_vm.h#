@@ -1,0 +1,319 @@
+mod hlpp_text
+mod hlpp_num
+mod hlpp_map
+mod hlpp_ops
+mod hlpp_prog
+mod hlpp_sys
+
+pub struct VM is
+    pub p: hlpp_prog::Prog
+    ;; variables (slot indexed)
+    pub vals: [string]
+    pub vt: [int]            ;; 0 undefined, 1 string, 2 number, 3 bool, 4 list
+    pub ni: [int]            ;; cached integer value
+    pub nk: [int]            ;; 0 unknown, 1 int (string valid), 2 int (string stale), 4 not numeric
+    ;; operand stack
+    pub stk: [string]
+    pub sp: int
+    ;; call stack
+    pub rpc: [int]
+    pub rkind: [int]         ;; 0 function, 1 arena, 2 method, 3 import/chunk
+    pub rself: [string]
+    pub robj: [int]          ;; objects allocated at frame entry (region mark)
+    pub rsp: int
+    ;; numeric stack
+    pub nm: [int]
+    pub ns: [int]
+    pub nsp: int
+    pub nfail: bool
+    ;; control
+    pub fns: hlpp_map::SMap
+    pub arena_sz: hlpp_map::SMap
+    pub last_exit: int
+    pub flag: bool
+    pub pc: int
+    pub running: bool
+    pub exit_code: int
+    pub err: string
+    pub err_pc: int
+    ;; loop frames
+    pub it_pool: [string]
+    pub it_len: int
+    pub itf_pos: [int]
+    pub itf_end: [int]
+    pub itf_start: [int]
+    pub itf_cnt: [int]
+    pub itsp: int
+    pub wcnt: [int]
+    pub wsp: int
+    pub rcnt: [int]
+    pub rcsp: int
+    pub sws: [string]
+    pub swsp: int
+    ;; goroutine snapshots
+    pub snap_v: [string]
+    pub snap_t: [int]
+    pub snap_off: [int]
+    pub snap_n: [int]
+    pub snapsp: int
+    ;; classes / objects
+    pub cls: hlpp_map::SMap
+    pub cls_name: [string]
+    pub cls_parent: [int]
+    pub meth: hlpp_map::SMap        ;; "cid:name" -> pc
+    pub meth_par: hlpp_map::SMap    ;; "cid:name" -> params lit idx
+    pub fld_def: [string]           ;; flat "cid\u{1}name\u{1}default"
+    pub cur_cls: int
+    pub obj_cls: [int]
+    pub obj_live: [int]
+    pub obj_free: [int]
+    pub obj_nfree: int
+    pub ofields: hlpp_map::SMap     ;; "id.field" -> index in ofv
+    pub ofv: [string]
+    pub ic_cls: [int]               ;; inline cache per instruction
+    pub ic_pc: [int]
+    ;; misc
+    pub args: [string]
+    pub script: string
+    pub shell: string
+    pub win: bool
+    pub hot: [int]                  ;; backward-jump counters per instruction
+    pub jit_state: [int]            ;; 0 cold, 1 traced, 2 rejected
+    pub jit_on: bool
+    pub stats_ops: int
+    pub libpaths: [string]
+    pub loaded: hlpp_map::SMap      ;; imported library specs already loaded
+    pub depth_limit: int
+    pub obj_created: int
+    pub trace: bool
+    pub obj_fnames: [string]        ;; per object: "\u{1}f1\u{1}f2" (dynamic field index)
+    pub obj_seq: [int]
+    pub lit_i: [int]
+    pub lit_k: [int]                ;; 0 unknown, 1 int, 2 not an int literal
+    pub chan_slots: [int]
+    pub depth: int
+    pub ofv_free: [int]
+    pub kids: [int]
+    pub is_child: bool
+    pub arena_slots: [int]
+    pub arena_scan: int
+    pub sc: [int]                   ;; cached slots: 0 self, 1 _ret, 2 _args, 3 _arena_args, 4 _arena_name, 5 _arena_size
+    pub cls_fields: [string]        ;; per class: "\u{1}name\u{2}default" entries (own fields)
+end
+
+pub fn new_vm(p: hlpp_prog::Prog) -> VM is
+    let vm: VM = VM {
+        p: p, vals: [], vt: [], ni: [], nk: [],
+        stk: [], sp: 0,
+        rpc: [], rkind: [], rself: [], robj: [], rsp: 0,
+        nm: [], ns: [], nsp: 0, nfail: false,
+        fns: hlpp_map::new(), arena_sz: hlpp_map::new(), last_exit: 0, flag: false, pc: 0, running: true,
+        exit_code: 0, err: "", err_pc: 0 - 1,
+        it_pool: [], it_len: 0, itf_pos: [], itf_end: [], itf_start: [], itf_cnt: [], itsp: 0,
+        wcnt: [], wsp: 0, rcnt: [], rcsp: 0, sws: [], swsp: 0,
+        snap_v: [], snap_t: [], snap_off: [], snap_n: [], snapsp: 0,
+        cls: hlpp_map::new(), cls_name: [], cls_parent: [], meth: hlpp_map::new(), meth_par: hlpp_map::new(),
+        fld_def: [], cur_cls: 0 - 1,
+        obj_cls: [], obj_live: [], obj_free: [], obj_nfree: 0, ofields: hlpp_map::new(), ofv: [],
+        ic_cls: [], ic_pc: [],
+        args: [], script: "", shell: "sh", win: false, hot: [], jit_state: [], jit_on: true, stats_ops: 0,
+        libpaths: [], loaded: hlpp_map::new(), depth_limit: 20000, obj_created: 0, trace: false,
+        obj_fnames: [], obj_seq: [], lit_i: [], lit_k: [], chan_slots: [], depth: 0, ofv_free: [], kids: [], is_child: false, arena_slots: [], arena_scan: 0, sc: [0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1], cls_fields: [] }
+    return vm
+end
+
+;; fixed-size scratch areas are grown lazily
+pub fn grow_stack(vm: VM) is
+    let target: int = vm.sp + 8
+    while array_len(vm.stk) < target is vm.stk = array_push(vm.stk, "") end
+end
+
+pub fn ensure_slots(vm: VM) is
+    let n: int = array_len(vm.p.names)
+    while array_len(vm.vals) < n is
+        vm.vals = array_push(vm.vals, "")
+        vm.vt = array_push(vm.vt, 0)
+        vm.ni = array_push(vm.ni, 0)
+        vm.nk = array_push(vm.nk, 0)
+    end
+end
+
+pub fn ensure_lits(vm: VM) is
+    let n: int = array_len(vm.p.lits)
+    while array_len(vm.lit_i) < n is
+        vm.lit_i = array_push(vm.lit_i, 0)
+        vm.lit_k = array_push(vm.lit_k, 0)
+    end
+end
+
+pub fn ensure_code(vm: VM) is
+    let n: int = hlpp_prog::here(vm.p)
+    while array_len(vm.hot) < n is
+        vm.hot = array_push(vm.hot, 0)
+        vm.jit_state = array_push(vm.jit_state, 0)
+        vm.ic_cls = array_push(vm.ic_cls, 0 - 1)
+        vm.ic_pc = array_push(vm.ic_pc, 0)
+    end
+end
+
+pub fn fail(vm: VM, msg: string) is
+    if string_len(vm.err) == 0 is
+        vm.err = msg
+        vm.err_pc = vm.pc - 1
+    end
+    vm.running = false
+    vm.exit_code = 1
+end
+
+;; ── stack ───────────────────────────────────────────────────────────────────
+pub fn push(vm: VM, s: string) is
+    if vm.sp >= array_len(vm.stk) is
+        let mut k: int = 0
+        let grow: int = 256
+        while k < grow is
+            vm.stk = array_push(vm.stk, "")
+            k += 1
+        end
+    end
+    vm.stk[vm.sp] = s
+    vm.sp += 1
+end
+
+pub fn pop(vm: VM) -> string is
+    if vm.sp <= 0 is return "" end
+    vm.sp -= 1
+    return vm.stk[vm.sp]
+end
+
+;; ── variables ───────────────────────────────────────────────────────────────
+pub fn get_var(vm: VM, slot: int) -> string is
+    let t: int = vm.vt[slot]
+    if t == 0 is
+        return hlpp_sys::getenv(vm.p.names[slot])
+    end
+    if vm.nk[slot] == 2 is
+        let v: int = vm.ni[slot]
+        vm.vals[slot] = to_string(v)
+        vm.nk[slot] = 1
+    end
+    return vm.vals[slot]
+end
+
+pub fn set_var(vm: VM, slot: int, s: string, t: int) is
+    vm.vals[slot] = s
+    vm.vt[slot] = t
+    vm.nk[slot] = 0
+end
+
+pub fn set_int(vm: VM, slot: int, v: int) is
+    vm.ni[slot] = v
+    vm.nk[slot] = 2
+    vm.vt[slot] = 1
+end
+
+pub fn unset_var(vm: VM, slot: int) is
+    vm.vals[slot] = ""
+    vm.vt[slot] = 0
+    vm.nk[slot] = 0
+end
+
+pub fn find_slot(vm: VM, name: string) -> int is
+    let i: int = hlpp_map::find(vm.p.symmap, name)
+    if i < 0 is return 0 - 1 end
+    return vm.p.symmap.vals[i]
+end
+
+pub fn slot_of(vm: VM, name: string) -> int is
+    let s: int = hlpp_prog::slot(vm.p, name)
+    ensure_slots(vm)
+    return s
+end
+
+pub fn get_dyn(vm: VM, name: string) -> string is
+    let s: int = find_slot(vm, name)
+    if s < 0 is return hlpp_sys::getenv(name) end
+    return get_var(vm, s)
+end
+
+pub fn set_dyn(vm: VM, name: string, v: string, t: int) is
+    let s: int = slot_of(vm, name)
+    set_var(vm, s, v, t)
+end
+
+pub fn type_name(t: int) -> string is
+    if t == 1 is return "string" end
+    if t == 2 is return "number" end
+    if t == 3 is return "bool" end
+    if t == 4 is return "list" end
+    return "nil"
+end
+
+;; ── numbers ─────────────────────────────────────────────────────────────────
+;; Numeric view of a variable. Result in vm scratch: returned Num (ok=false => not numeric).
+pub fn num_of(vm: VM, slot: int) -> hlpp_num::Num is
+    if vm.vt[slot] != 0 && (vm.nk[slot] == 1 || vm.nk[slot] == 2) is
+        return hlpp_num::of_int(vm.ni[slot])
+    end
+    let s: string = get_var(vm, slot)
+    let n: hlpp_num::Num = hlpp_num::parse(s)
+    if n.ok && n.s == 0 && vm.vt[slot] != 0 is
+        vm.ni[slot] = n.m
+        if vm.nk[slot] == 0 is vm.nk[slot] = 1 end
+    end
+    return n
+end
+
+pub fn npush(vm: VM, m: int, s: int) is
+    if vm.nsp >= array_len(vm.nm) is
+        let mut k: int = 0
+        while k < 64 is
+            vm.nm = array_push(vm.nm, 0)
+            vm.ns = array_push(vm.ns, 0)
+            k += 1
+        end
+    end
+    vm.nm[vm.nsp] = m
+    vm.ns[vm.nsp] = s
+    vm.nsp += 1
+end
+
+;; ── objects ─────────────────────────────────────────────────────────────────
+pub fn obj_str(id: int) -> string is
+    return "<obj:" + to_string(id) + ">"
+end
+
+;; "<obj:12>" -> 12, -1 otherwise
+pub fn obj_id(s: string) -> int is
+    if !string_starts_with(s, "<obj:") || !string_ends_with(s, ">") is return 0 - 1 end
+    let ip: hlpp_text::IntParse = hlpp_text::parse_i(string_slice(s, 5, string_len(s) - 1))
+    if !ip.ok is return 0 - 1 end
+    return ip.v
+end
+
+;; ── call frames ─────────────────────────────────────────────────────────────
+;; kind: 0 function, 1 arena function, 2 method, 3 imported chunk
+pub fn frame_push(vm: VM, ret_pc: int, kind: int, saved_self: string, mark: int) is
+    if vm.rsp >= array_len(vm.rpc) is
+        let mut k: int = 0
+        while k < 64 is
+            vm.rpc = array_push(vm.rpc, 0)
+            vm.rkind = array_push(vm.rkind, 0)
+            vm.rself = array_push(vm.rself, "")
+            vm.robj = array_push(vm.robj, 0)
+            k += 1
+        end
+    end
+    vm.rpc[vm.rsp] = ret_pc
+    vm.rkind[vm.rsp] = kind
+    vm.rself[vm.rsp] = saved_self
+    vm.robj[vm.rsp] = mark
+    vm.rsp += 1
+end
+
+pub fn special(vm: VM, which: int, name: string) -> int is
+    let c: int = vm.sc[which]
+    if c >= 0 && c < array_len(vm.p.names) is return c end
+    let s: int = slot_of(vm, name)
+    vm.sc[which] = s
+    return s
+end

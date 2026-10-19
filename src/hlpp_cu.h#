@@ -1,0 +1,1237 @@
+mod hlpp_text
+mod hlpp_num
+mod hlpp_sys
+mod hlpp_vm
+
+pub struct CU is
+    pub code: int
+    pub cap: string       ;; value captured by `|> @var`
+    pub err: string       ;; non-empty: anyhow-style error, executor prints `[/>] err` and uses code 1
+end
+
+fn done(out: string) -> CU is
+    hlpp_sys::out(out)
+    return CU { code: 0, cap: trim_nl(out), err: "" }
+end
+
+fn done_code(out: string, code: int) -> CU is
+    hlpp_sys::out(out)
+    return CU { code: code, cap: trim_nl(out), err: "" }
+end
+
+fn quiet(code: int) -> CU is
+    return CU { code: code, cap: "", err: "" }
+end
+
+fn fail(msg: string) -> CU is
+    return CU { code: 1, cap: "", err: msg }
+end
+
+fn trim_nl(s: string) -> string is
+    let mut t: string = s
+    while string_ends_with(t, "\n") is t = string_slice(t, 0, string_len(t) - 1) end
+    return t
+end
+
+fn warn(msg: string) is
+    hlpp_sys::err(msg + "\n")
+end
+
+;; Rust `str::lines()`
+fn lines_of(s: string) -> [string] is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut out: [string] = []
+    let mut st: int = 0
+    let mut i: int = 0
+    while i < n is
+        if bs[i] == 10 is
+            let mut e: int = i
+            if e > st && bs[e - 1] == 13 is e -= 1 end
+            out = array_push(out, string_slice(s, st, e))
+            st = i + 1
+        end
+        i += 1
+    end
+    if st < n is out = array_push(out, string_slice(s, st, n)) end
+    return out
+end
+
+fn join_lines(ls: [string]) -> string is
+    let mut r: string = ""
+    let mut i: int = 0
+    while i < array_len(ls) is
+        r = r + ls[i] + "\n"
+        i += 1
+    end
+    return r
+end
+
+fn rev_chars(s: string) -> string is
+    let bs: [int] = string_to_bytes(s)
+    let c128: int = 128
+    let c192: int = 192
+    let mut r: string = ""
+    let mut i: int = array_len(bs)
+    while i > 0 is
+        let mut j: int = i - 1
+        while j > 0 && bs[j] >= c128 && bs[j] < c192 is j -= 1 end
+        r = r + string_slice(s, j, i)
+        i = j
+    end
+    return r
+end
+
+;; shell_split of the coreutils crate: quotes dropped, empty words dropped
+fn split_args(s: string) -> [string] is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut out: [string] = []
+    let mut cur: string = ""
+    let mut in_s: bool = false
+    let mut in_d: bool = false
+    let mut i: int = 0
+    while i < n is
+        let c: int = bs[i]
+        if c == 39 && !in_d is
+            in_s = !in_s
+        else if c == 34 && !in_s is
+            in_d = !in_d
+        else if (c == 32 || c == 9) && !in_s && !in_d is
+            if string_len(cur) > 0 is
+                out = array_push(out, cur)
+                cur = ""
+            end
+        else is
+            cur = cur + string_slice(s, i, i + 1)
+        end
+        i += 1
+    end
+    if string_len(cur) > 0 is out = array_push(out, cur) end
+    return out
+end
+
+fn io_err(path: string) -> string is
+    if !hlpp_sys::exists(path) is return "No such file or directory (os error 2)" end
+    if hlpp_sys::is_dir(path) is return "Is a directory (os error 21)" end
+    return "Permission denied (os error 13)"
+end
+
+fn read_or_stdin(files: [string]) -> string is
+    if array_len(files) == 0 is return hlpp_sys::read_stdin() end
+    let mut all: string = ""
+    let mut i: int = 0
+    while i < array_len(files) is
+        all = all + hlpp_sys::read(files[i])
+        i += 1
+    end
+    return all
+end
+
+fn first_missing(files: [string]) -> string is
+    let mut i: int = 0
+    while i < array_len(files) is
+        if !hlpp_sys::is_file(files[i]) is return files[i] end
+        i += 1
+    end
+    return ""
+end
+
+fn pnum(s: string) -> hlpp_num::Num is
+    return hlpp_num::val_or0(string_trim(s))
+end
+
+fn tool_echo(args: [string]) -> CU is
+    let mut newline: bool = true
+    let mut esc: bool = false
+    let mut parts: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-n" is newline = false
+        else if a == "-e" is esc = true
+        else if a == "-E" is esc = false
+        else is parts = array_push(parts, a) end
+        i += 1
+    end
+    let mut out: string = hlpp_text::join(parts, " ")
+    if esc is
+        out = string_replace_all(out, "\\n", "\n")
+        out = string_replace_all(out, "\\t", "\t")
+        out = string_replace_all(out, "\\r", "\r")
+        out = string_replace_all(out, "\\\\", "\\")
+    end
+    if newline is out = out + "\n" end
+    return done(out)
+end
+
+fn tool_cat(args: [string]) -> CU is
+    if array_len(args) == 0 is
+        return done(hlpp_sys::read_stdin())
+    end
+    let mut all: string = ""
+    let mut code: int = 0
+    let mut i: int = 0
+    while i < array_len(args) is
+        let p: string = args[i]
+        if p == "-" is
+            let b: string = hlpp_sys::read_stdin()
+            hlpp_sys::out(b)
+            all = all + b
+        else if hlpp_sys::is_file(p) is
+            let s: string = hlpp_sys::read(p)
+            hlpp_sys::out(s)
+            all = all + s
+        else is
+            warn("[/> cat] " + p + ": " + io_err(p))
+            code = 1
+        end
+        i += 1
+    end
+    return CU { code: code, cap: trim_nl(all), err: "" }
+end
+
+fn tool_ls(args: [string]) -> CU is
+    let mut long: bool = false
+    let mut all: bool = false
+    let mut paths: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-l" is long = true
+        else if a == "-a" is all = true
+        else if a == "-la" || a == "-al" is
+            long = true
+            all = true
+        else is paths = array_push(paths, a) end
+        i += 1
+    end
+    if array_len(paths) == 0 is paths = array_push(paths, ".") end
+    let mut out: string = ""
+    let mut code: int = 0
+    let mut k: int = 0
+    while k < array_len(paths) is
+        let p: string = paths[k]
+        if !hlpp_sys::exists(p) is
+            warn("[/> ls] Nie znaleziono: " + p)
+            code = 1
+        else if hlpp_sys::is_dir(p) is
+            let names: [string] = hlpp_text::sort_strs(hlpp_sys::list_dir(p))
+            let mut j: int = 0
+            while j < array_len(names) is
+                let nm: string = names[j]
+                if (all || !string_starts_with(nm, ".")) && nm != "." && nm != ".." is
+                    if long is
+                        let full: string = p + "/" + nm
+                        let mut kind: string = "-"
+                        let mut sz: int = 0
+                        if hlpp_sys::is_dir(full) is
+                            kind = "d"
+                            sz = 4096
+                        else is
+                            sz = hlpp_sys::file_size(full)
+                        end
+                        let mut ss: string = to_string(sz)
+                        while string_len(ss) < 10 is ss = " " + ss end
+                        out = out + kind + ss + "  " + nm + "\n"
+                    else is
+                        out = out + nm + "\n"
+                    end
+                end
+                j += 1
+            end
+        else is
+            out = out + p + "\n"
+        end
+        k += 1
+    end
+    hlpp_sys::out(out)
+    return CU { code: code, cap: trim_nl(out), err: "" }
+end
+
+fn tool_grep(args: [string]) -> CU is
+    let mut icase: bool = false
+    let mut invert: bool = false
+    let mut count_only: bool = false
+    let mut recursive: bool = false
+    let mut pat: string = ""
+    let mut have: bool = false
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-i" || a == "--ignore-case" is icase = true
+        else if a == "-v" || a == "--invert-match" is invert = true
+        else if a == "-c" || a == "--count" is count_only = true
+        else if a == "-r" || a == "-R" is recursive = true
+        else if a == "-e" is
+            i += 1
+            if i < array_len(args) is
+                pat = args[i]
+                have = true
+            end
+        else if string_starts_with(a, "-") is
+            i += 0
+        else is
+            if !have is
+                pat = a
+                have = true
+            else is
+                files = array_push(files, a)
+            end
+        end
+        i += 1
+    end
+    if icase is pat = hlpp_text::low(pat) end
+    let mut out: string = ""
+    let mut found: bool = false
+    let mut code: int = 1
+    let mut srcs: [string] = files
+    if array_len(srcs) == 0 is srcs = ["stdin"] end
+    let mut f: int = 0
+    while f < array_len(srcs) is
+        let src: string = srcs[f]
+        let mut ok: bool = true
+        let mut content: string = ""
+        if array_len(files) == 0 is
+            content = hlpp_sys::read_stdin()
+        else if hlpp_sys::is_file(src) is
+            content = hlpp_sys::read(src)
+        else is
+            warn("[/> grep] " + src + ": " + io_err(src))
+            code = 2
+            ok = false
+        end
+        if ok is
+            let ls: [string] = lines_of(content)
+            let mut matches: int = 0
+            let mut k: int = 0
+            while k < array_len(ls) is
+                let mut chk: string = ls[k]
+                if icase is chk = hlpp_text::low(chk) end
+                let matched: bool = string_find(chk, pat) >= 0 || string_len(pat) == 0
+                let show: bool = matched != invert
+                if show is
+                    matches += 1
+                    found = true
+                    if !count_only is
+                        if array_len(files) > 1 || recursive is
+                            out = out + src + ":" + ls[k] + "\n"
+                        else is
+                            out = out + ls[k] + "\n"
+                        end
+                    end
+                end
+                k += 1
+            end
+            if count_only is out = out + to_string(matches) + "\n" end
+        end
+        f += 1
+    end
+    if found is code = 0 end
+    return done_code(out, code)
+end
+
+fn parse_n_files(args: [string]) -> [string] is
+    ;; returns [n, file1, file2...]
+    let mut n: string = "10"
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-n" is
+            i += 1
+            if i < array_len(args) is
+                let ip: hlpp_text::IntParse = hlpp_text::parse_i(args[i])
+                if ip.ok is
+                    let v: int = ip.v
+                    n = to_string(v)
+                else is
+                    n = "10"
+                end
+            end
+        else if string_starts_with(a, "-") && string_len(a) > 1 && hlpp_text::parse_i(string_slice(a, 1, string_len(a))).ok is
+            n = string_slice(a, 1, string_len(a))
+        else is
+            files = array_push(files, a)
+        end
+        i += 1
+    end
+    let mut r: [string] = [n]
+    let mut k: int = 0
+    while k < array_len(files) is
+        r = array_push(r, files[k])
+        k += 1
+    end
+    return r
+end
+
+fn tool_head_tail(args: [string], head: bool) -> CU is
+    let pf: [string] = parse_n_files(args)
+    let n: int = hlpp_text::int_or(pf[0], 10)
+    let mut files: [string] = []
+    let mut i: int = 1
+    while i < array_len(pf) is
+        files = array_push(files, pf[i])
+        i += 1
+    end
+    let miss: string = first_missing(files)
+    if string_len(miss) > 0 is return fail("[/> " + "head/tail" + "] " + miss + ": " + io_err(miss)) end
+    let mut out: string = ""
+    let mut srcs: [string] = files
+    let mut stdin_mode: bool = false
+    if array_len(srcs) == 0 is stdin_mode = true end
+    let rounds: int = array_len(srcs)
+    let mut r: int = 0
+    let mut total_rounds: int = rounds
+    if stdin_mode is total_rounds = 1 end
+    while r < total_rounds is
+        let mut content: string = ""
+        if stdin_mode is content = hlpp_sys::read_stdin() else is content = hlpp_sys::read(srcs[r]) end
+        let ls: [string] = lines_of(content)
+        let total: int = array_len(ls)
+        let mut st: int = 0
+        let mut en: int = total
+        if head is
+            if n < total is en = n end
+        else is
+            if total > n is st = total - n end
+        end
+        let mut k: int = st
+        while k < en is
+            out = out + ls[k] + "\n"
+            k += 1
+        end
+        r += 1
+    end
+    hlpp_sys::out(out)
+    return CU { code: 0, cap: trim_nl(out), err: "" }
+end
+
+fn tool_wc(args: [string]) -> CU is
+    let mut cl: bool = false
+    let mut cw: bool = false
+    let mut cc: bool = false
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-l" is cl = true
+        else if a == "-w" is cw = true
+        else if a == "-c" || a == "-m" is cc = true
+        else is files = array_push(files, a) end
+        i += 1
+    end
+    if !cl && !cw && !cc is
+        cl = true
+        cw = true
+        cc = true
+    end
+    let mut content: string = ""
+    if array_len(files) == 0 is
+        content = hlpp_sys::read_stdin()
+    else is
+        if !hlpp_sys::is_file(files[0]) is return fail(io_err(files[0])) end
+        content = hlpp_sys::read(files[0])
+    end
+    let l: int = array_len(lines_of(content))
+    let w: int = array_len(hlpp_text::words(content))
+    let c: int = string_len(content)
+    let mut parts: [string] = []
+    if cl is parts = array_push(parts, to_string(l)) end
+    if cw is parts = array_push(parts, to_string(w)) end
+    if cc is parts = array_push(parts, to_string(c)) end
+    let line: string = hlpp_text::join(parts, "\t")
+    hlpp_sys::outln(line)
+    return CU { code: 0, cap: line, err: "" }
+end
+
+fn glob_ok(path: string, pat: string, ty: string, has_pat: bool, has_ty: bool) -> bool is
+    if has_ty is
+        if ty == "f" && !hlpp_sys::is_file(path) is return false end
+        if ty == "d" && !hlpp_sys::is_dir(path) is return false end
+    end
+    if has_pat is
+        let name: string = hlpp_text::basename(path)
+        if string_find(pat, "*") >= 0 is
+            let mut p2: string = string_replace_all(pat, "*.", "")
+            p2 = string_replace_all(p2, "*", "")
+            if string_len(p2) > 0 && string_find(name, p2) < 0 is return false end
+        else if name != pat is
+            return false
+        end
+    end
+    return true
+end
+
+fn find_rec(dir: string, pat: string, ty: string, has_pat: bool, has_ty: bool, maxd: int, depth: int, out: string) -> string is
+    let mut o: string = out
+    if maxd >= 0 && depth > maxd is return o end
+    if !hlpp_sys::exists(dir) is return o end
+    if hlpp_sys::is_file(dir) is
+        if glob_ok(dir, pat, ty, has_pat, has_ty) is o = o + dir + "\n" end
+        return o
+    end
+    let names: [string] = hlpp_text::sort_strs(hlpp_sys::list_dir(dir))
+    let mut i: int = 0
+    while i < array_len(names) is
+        let nm: string = names[i]
+        if nm != "." && nm != ".." is
+            let mut path: string = dir + "/" + nm
+            if string_ends_with(dir, "/") is path = dir + nm end
+            if glob_ok(path, pat, ty, has_pat, has_ty) is o = o + path + "\n" end
+            if hlpp_sys::is_dir(path) is
+                o = find_rec(path, pat, ty, has_pat, has_ty, maxd, depth + 1, o)
+            end
+        end
+        i += 1
+    end
+    return o
+end
+
+fn tool_find(args: [string]) -> CU is
+    let mut start: string = "."
+    if array_len(args) > 0 is start = args[0] end
+    let mut pat: string = ""
+    let mut ty: string = ""
+    let mut has_pat: bool = false
+    let mut has_ty: bool = false
+    let mut maxd: int = 0 - 1
+    let mut i: int = 1
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-name" is
+            i += 1
+            if i < array_len(args) is
+                pat = args[i]
+                has_pat = true
+            end
+        else if a == "-type" is
+            i += 1
+            if i < array_len(args) is
+                ty = string_slice(args[i], 0, 1)
+                has_ty = true
+            end
+        else if a == "-maxdepth" is
+            i += 1
+            if i < array_len(args) is maxd = hlpp_text::int_or(args[i], 0 - 1) end
+        end
+        i += 1
+    end
+    return done(find_rec(start, pat, ty, has_pat, has_ty, maxd, 0, ""))
+end
+
+fn copy_rec(src: string, dst: string) -> int is
+    hlpp_sys::mkdir_p(dst)
+    let names: [string] = hlpp_sys::list_dir(src)
+    let mut i: int = 0
+    while i < array_len(names) is
+        let nm: string = names[i]
+        if nm != "." && nm != ".." is
+            if hlpp_sys::is_dir(src + "/" + nm) is
+                copy_rec(src + "/" + nm, dst + "/" + nm)
+            else is
+                hlpp_sys::copy_path(src + "/" + nm, dst + "/" + nm)
+            end
+        end
+        i += 1
+    end
+    return 0
+end
+
+fn tool_cp(args: [string]) -> CU is
+    let mut recursive: bool = false
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-r" || a == "-R" || a == "--recursive" is recursive = true else is files = array_push(files, a) end
+        i += 1
+    end
+    if array_len(files) < 2 is return fail("[/> cp] Użycie: cp [-r] src dst") end
+    let dst: string = files[array_len(files) - 1]
+    let mut k: int = 0
+    while k < array_len(files) - 1 is
+        let src: string = files[k]
+        if hlpp_sys::is_dir(src) && recursive is
+            copy_rec(src, dst + "/" + hlpp_text::basename(src))
+        else if hlpp_sys::is_file(src) is
+            if hlpp_sys::is_dir(dst) is
+                hlpp_sys::copy_path(src, dst + "/" + hlpp_text::basename(src))
+            else is
+                hlpp_sys::copy_path(src, dst)
+            end
+        else is
+            warn("[/> cp] " + src + " nie istnieje")
+            return quiet(1)
+        end
+        k += 1
+    end
+    return quiet(0)
+end
+
+fn tool_rm(args: [string]) -> CU is
+    let mut recursive: bool = false
+    let mut force: bool = false
+    let mut paths: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-r" || a == "-R" || a == "--recursive" is recursive = true
+        else if a == "-f" || a == "--force" is force = true
+        else if a == "-rf" || a == "-fr" is
+            recursive = true
+            force = true
+        else is paths = array_push(paths, a) end
+        i += 1
+    end
+    let mut code: int = 0
+    let mut k: int = 0
+    while k < array_len(paths) is
+        let p: string = paths[k]
+        if !hlpp_sys::exists(p) is
+            if !force is
+                warn("[/> rm] " + p + " nie istnieje")
+                code = 1
+            end
+        else if hlpp_sys::is_dir(p) && recursive is
+            hlpp_sys::remove_path(p, true)
+        else if hlpp_sys::is_file(p) is
+            hlpp_sys::remove_path(p, false)
+        else is
+            warn("[/> rm] " + p + " jest katalogiem — użyj -r")
+            code = 1
+        end
+        k += 1
+    end
+    return quiet(code)
+end
+
+fn tool_mkdir_touch(cmd: string, args: [string]) -> CU is
+    let mut parents: bool = false
+    let mut paths: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if cmd == "mkdir" && (a == "-p" || a == "--parents") is parents = true else is paths = array_push(paths, a) end
+        i += 1
+    end
+    let mut k: int = 0
+    while k < array_len(paths) is
+        let p: string = paths[k]
+        if cmd == "mkdir" is
+            if parents is
+                hlpp_sys::mkdir_p(p)
+            else is
+                if hlpp_sys::exists(p) is return fail("File exists (os error 17)") end
+                let r: int = hlpp_sys::mkdir_p(p)
+                if r != 0 is return fail("No such file or directory (os error 2)") end
+            end
+        else is
+            if !hlpp_sys::exists(p) is
+                hlpp_sys::write_text(p, "")
+            else is
+                hlpp_sys::write_text(p, hlpp_sys::read(p))
+            end
+        end
+        k += 1
+    end
+    return quiet(0)
+end
+
+fn tool_sort(args: [string]) -> CU is
+    let mut rev: bool = false
+    let mut numeric: bool = false
+    let mut uniq: bool = false
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-r" is rev = true
+        else if a == "-n" is numeric = true
+        else if a == "-u" is uniq = true
+        else is files = array_push(files, a) end
+        i += 1
+    end
+    let miss: string = first_missing(files)
+    if string_len(miss) > 0 is return fail(io_err(miss)) end
+    let ls: [string] = lines_of(read_or_stdin(files))
+    let mut sorted: [string] = []
+    if numeric is
+        ;; stable insertion sort on the numeric value (f64 parse, default 0)
+        let mut i2: int = 0
+        while i2 < array_len(ls) is
+            let x: string = ls[i2]
+            let xn: hlpp_num::Num = pnum(x)
+            sorted = array_push(sorted, x)
+            let mut j: int = array_len(sorted) - 1
+            while j > 0 && hlpp_num::cmp(pnum(sorted[j - 1]), xn) > 0 is
+                sorted[j] = sorted[j - 1]
+                j -= 1
+            end
+            sorted[j] = x
+            i2 += 1
+        end
+    else is
+        sorted = hlpp_text::sort_strs(ls)
+    end
+    let mut res: [string] = []
+    if rev is
+        let mut k: int = array_len(sorted) - 1
+        while k >= 0 is
+            res = array_push(res, sorted[k])
+            k -= 1
+        end
+    else is
+        res = sorted
+    end
+    let mut fin: [string] = []
+    let mut m: int = 0
+    while m < array_len(res) is
+        if !uniq || m == 0 || res[m] != res[m - 1] is fin = array_push(fin, res[m]) end
+        m += 1
+    end
+    let out: string = hlpp_text::join(fin, "\n")
+    hlpp_sys::outln(out)
+    return CU { code: 0, cap: out, err: "" }
+end
+
+fn tool_uniq(args: [string]) -> CU is
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        if !string_starts_with(args[i], "-") is files = array_push(files, args[i]) end
+        i += 1
+    end
+    let miss: string = first_missing(files)
+    if string_len(miss) > 0 is return fail(io_err(miss)) end
+    let ls: [string] = lines_of(read_or_stdin(files))
+    let mut out: string = ""
+    let mut res: [string] = []
+    let mut k: int = 0
+    while k < array_len(ls) is
+        if k == 0 || ls[k] != ls[k - 1] is
+            hlpp_sys::outln(ls[k])
+            res = array_push(res, ls[k])
+        end
+        k += 1
+    end
+    return CU { code: 0, cap: hlpp_text::join(res, "\n"), err: "" }
+end
+
+fn tool_cut(args: [string]) -> CU is
+    let mut delim: string = "\t"
+    let mut fields: [int] = []
+    let mut has_range: bool = false
+    let mut ra: int = 1
+    let mut rb: int = 0
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-d" is
+            i += 1
+            if i < array_len(args) && string_len(args[i]) > 0 is delim = string_slice(args[i], 0, 1) end
+        else if a == "-f" is
+            i += 1
+            if i < array_len(args) is
+                let ps: [string] = hlpp_text::words_by(args[i], ",")
+                let mut k: int = 0
+                while k < array_len(ps) is
+                    let ip: hlpp_text::IntParse = hlpp_text::parse_i(string_trim(ps[k]))
+                    if ip.ok is
+                        let v: int = ip.v
+                        fields = array_push(fields, v)
+                    end
+                    k += 1
+                end
+            end
+        else if a == "-c" is
+            i += 1
+            if i < array_len(args) is
+                let dash: int = string_find(args[i], "-")
+                if dash >= 0 is
+                    has_range = true
+                    ra = hlpp_text::int_or(string_slice(args[i], 0, dash), 1)
+                    rb = hlpp_text::int_or(string_slice(args[i], dash + 1, string_len(args[i])), 1000000000)
+                end
+            end
+        else if !string_starts_with(a, "-") is
+            files = array_push(files, a)
+        end
+        i += 1
+    end
+    let miss: string = first_missing(files)
+    if string_len(miss) > 0 is return fail(io_err(miss)) end
+    let ls: [string] = lines_of(read_or_stdin(files))
+    let mut out: string = ""
+    let mut n: int = 0
+    while n < array_len(ls) is
+        let line: string = ls[n]
+        let mut res: string = line
+        if has_range is
+            let len: int = string_len(line)
+            let mut st: int = ra - 1
+            if st > len is st = len end
+            let mut en: int = rb
+            if en > len is en = len end
+            if st > en is st = en end
+            res = string_slice(line, st, en)
+        else if array_len(fields) > 0 is
+            let cols: [string] = split_keep(line, delim)
+            let mut sel: [string] = []
+            let mut f: int = 0
+            while f < array_len(fields) is
+                let idx: int = fields[f] - 1
+                if idx >= 0 && idx < array_len(cols) is sel = array_push(sel, cols[idx]) end
+                f += 1
+            end
+            res = hlpp_text::join(sel, delim)
+        end
+        hlpp_sys::outln(res)
+        out = out + res + "\n"
+        n += 1
+    end
+    return CU { code: 0, cap: trim_nl(out), err: "" }
+end
+
+;; split keeping empty fields (Rust str::split)
+fn split_keep(s: string, sep: string) -> [string] is
+    let mut out: [string] = []
+    let mut from: int = 0
+    while true is
+        let rest: string = string_slice(s, from, string_len(s))
+        let k: int = string_find(rest, sep)
+        if k < 0 is
+            out = array_push(out, rest)
+            break
+        end
+        out = array_push(out, string_slice(rest, 0, k))
+        from = from + k + string_len(sep)
+    end
+    return out
+end
+
+fn expand_set(s: string) -> [string] is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut out: [string] = []
+    let mut i: int = 0
+    while i < n is
+        if i + 2 < n && bs[i + 1] == 45 is
+            let mut c: int = bs[i]
+            while c <= bs[i + 2] is
+                out = array_push(out, string_slice(s, 0, 0) + chr(c))
+                c += 1
+            end
+            i += 3
+        else is
+            out = array_push(out, string_slice(s, i, i + 1))
+            i += 1
+        end
+    end
+    return out
+end
+
+fn chr(c: int) -> string is
+    let t: string = "\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\t\n\u{b}\u{c}\r\u{e}\u{f}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1a}\u{1b}\u{1c}\u{1d}\u{1e}\u{1f} !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    if c >= 0 && c < 127 is return string_slice(t, c, c + 1) end
+    return ""
+end
+
+fn idx_of(set: [string], c: string) -> int is
+    let mut i: int = 0
+    while i < array_len(set) is
+        if set[i] == c is return i end
+        i += 1
+    end
+    return 0 - 1
+end
+
+fn tool_tr(args: [string]) -> CU is
+    let mut del: bool = false
+    let mut sets: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-d" is del = true
+        else if a == "-s" is del = del
+        else is sets = array_push(sets, a) end
+        i += 1
+    end
+    let content: string = hlpp_sys::read_stdin()
+    let mut result: string = content
+    if del && array_len(sets) > 0 is
+        let ds: [string] = expand_set(sets[0])
+        let mut r: string = ""
+        let mut k: int = 0
+        while k < string_len(content) is
+            let ch: string = string_slice(content, k, k + 1)
+            if idx_of(ds, ch) < 0 is r = r + ch end
+            k += 1
+        end
+        result = r
+    else if array_len(sets) >= 2 is
+        let s1: [string] = expand_set(sets[0])
+        let s2: [string] = expand_set(sets[1])
+        let mut r2: string = ""
+        let mut k2: int = 0
+        while k2 < string_len(content) is
+            let ch2: string = string_slice(content, k2, k2 + 1)
+            let pos: int = idx_of(s1, ch2)
+            if pos >= 0 is
+                if pos < array_len(s2) is r2 = r2 + s2[pos]
+                else if array_len(s2) > 0 is r2 = r2 + s2[array_len(s2) - 1]
+                else is r2 = r2 + ch2 end
+            else is
+                r2 = r2 + ch2
+            end
+            k2 += 1
+        end
+        result = r2
+    end
+    return done(result)
+end
+
+fn tool_rev(args: [string]) -> CU is
+    let mut files: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        if !string_starts_with(args[i], "-") is files = array_push(files, args[i]) end
+        i += 1
+    end
+    let miss: string = first_missing(files)
+    if string_len(miss) > 0 is return fail(io_err(miss)) end
+    let ls: [string] = lines_of(read_or_stdin(files))
+    let mut out: string = ""
+    let mut k: int = 0
+    while k < array_len(ls) is
+        out = out + rev_chars(ls[k]) + "\n"
+        k += 1
+    end
+    return done(out)
+end
+
+fn tool_seq(args: [string]) -> CU is
+    let n: int = array_len(args)
+    if n < 1 || n > 3 is return fail("[/> seq] Użycie: seq [start] [krok] koniec") end
+    let mut a: hlpp_num::Num = hlpp_num::of_int(1)
+    let mut step: hlpp_num::Num = hlpp_num::of_int(1)
+    let mut e: hlpp_num::Num = hlpp_num::of_int(1)
+    let mut bad: string = ""
+    if n == 1 is
+        e = hlpp_num::parse(string_trim(args[0]))
+        if !e.ok is bad = args[0] end
+    else if n == 2 is
+        a = hlpp_num::parse(string_trim(args[0]))
+        e = hlpp_num::parse(string_trim(args[1]))
+        if !a.ok || !e.ok is bad = args[0] end
+    else is
+        a = hlpp_num::parse(string_trim(args[0]))
+        step = hlpp_num::parse(string_trim(args[1]))
+        e = hlpp_num::parse(string_trim(args[2]))
+        if !a.ok || !e.ok || !step.ok is bad = args[0] end
+    end
+    if string_len(bad) > 0 is return fail("invalid float literal") end
+    let mut out: string = ""
+    let mut cur: hlpp_num::Num = a
+    let mut guard: int = 0
+    let cap: int = 10000000
+    while hlpp_num::cmp(cur, e) <= 0 && guard < cap is
+        out = out + hlpp_num::fmt(cur) + "\n"
+        cur = hlpp_num::add(cur, step)
+        if hlpp_num::is_zero(step) is guard = cap end
+        guard += 1
+    end
+    return done(out)
+end
+
+fn tool_printf(args: [string]) -> CU is
+    if array_len(args) == 0 is return quiet(0) end
+    let mut r: string = string_replace_all(args[0], "\\n", "\n")
+    r = string_replace_all(r, "\\t", "\t")
+    r = string_replace_all(r, "\\\\", "\\")
+    let mut idx: int = 1
+    while true is
+        let pos: int = string_find(r, "%s")
+        if pos < 0 is break end
+        let mut rep: string = ""
+        if idx < array_len(args) is rep = args[idx] end
+        r = string_slice(r, 0, pos) + rep + string_slice(r, pos + 2, string_len(r))
+        idx += 1
+    end
+    while true is
+        let pos2: int = string_find(r, "%d")
+        if pos2 < 0 is break end
+        let mut rep2: string = "0"
+        if idx < array_len(args) is rep2 = args[idx] end
+        r = string_slice(r, 0, pos2) + rep2 + string_slice(r, pos2 + 2, string_len(r))
+        idx += 1
+    end
+    return done(r)
+end
+
+fn shell_join(args: [string]) -> string is
+    let mut q: string = ""
+    let mut i: int = 0
+    while i < array_len(args) is
+        q = q + " " + hlpp_sys::quote(args[i])
+        i += 1
+    end
+    return q
+end
+
+fn tool_external(vm: hlpp_vm::VM, prog: string, args: [string]) -> CU is
+    let r: hlpp_sys::Res = hlpp_sys::run_shell(prog + shell_join(args), vm.shell, true)
+    let s: string = trim_nl(r.out)
+    hlpp_sys::outln(s)
+    return CU { code: 0, cap: s, err: "" }
+end
+
+fn human_size(b: int) -> string is
+    let units: [string] = ["B", "K", "M", "G", "T"]
+    let mut idx: int = 0
+    let mut size10: int = b * 10
+    let mut rem: int = 0
+    while size10 >= 10240 && idx < 4 is
+        rem = size10 % 1024
+        size10 = size10 / 1024
+        idx += 1
+    end
+    if idx == 0 is return to_string(b) + "B" end
+    if rem >= 512 is size10 += 1 end
+    let whole: int = size10 / 10
+    let frac: int = size10 % 10
+    return to_string(whole) + "." + to_string(frac) + units[idx]
+end
+
+fn du_size(p: string) -> int is
+    if hlpp_sys::is_file(p) is return hlpp_sys::file_size(p) end
+    let mut total: int = 0
+    let names: [string] = hlpp_sys::list_dir(p)
+    let mut i: int = 0
+    while i < array_len(names) is
+        if names[i] != "." && names[i] != ".." is total = total + du_size(p + "/" + names[i]) end
+        i += 1
+    end
+    return total
+end
+
+fn tool_du(args: [string]) -> CU is
+    let mut human: bool = false
+    let mut paths: [string] = []
+    let mut i: int = 0
+    while i < array_len(args) is
+        let a: string = args[i]
+        if a == "-h" || a == "-sh" || a == "-hs" is human = true
+        else if a == "-s" is human = human
+        else is paths = array_push(paths, a) end
+        i += 1
+    end
+    if array_len(paths) == 0 is paths = array_push(paths, ".") end
+    let mut out: string = ""
+    let mut k: int = 0
+    while k < array_len(paths) is
+        let sz: int = du_size(paths[k])
+        let mut disp: string = to_string(sz)
+        if human is disp = human_size(sz) end
+        out = out + disp + "\t" + paths[k] + "\n"
+        k += 1
+    end
+    return done(out)
+end
+
+fn tool_stat(vm: hlpp_vm::VM, args: [string]) -> CU is
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < array_len(args) is
+        let p: string = args[i]
+        if !hlpp_sys::exists(p) is
+            warn("[/> stat] " + p + ": No such file or directory (os error 2)")
+            return quiet(1)
+        end
+        let mut typ: string = "inne"
+        let mut size: int = 4096
+        if hlpp_sys::is_dir(p) is
+            typ = "katalog"
+        else if hlpp_sys::is_file(p) is
+            typ = "plik"
+            size = hlpp_sys::file_size(p)
+        end
+        let r: hlpp_sys::Res = hlpp_sys::run_shell("stat -c '%f %Y' " + hlpp_sys::quote(p), vm.shell, true)
+        let sp: [string] = hlpp_text::words(string_trim(r.out))
+        let mut mode: string = "0"
+        let mut mt: string = "0"
+        if array_len(sp) == 2 is
+            mt = sp[1]
+            ;; %f is hex raw mode; the crate prints octal of st_mode — convert
+            mode = hex_to_oct(sp[0])
+        end
+        out = out + "  Plik: " + p + "\n  Typ: " + typ + "\n  Rozmiar: " + to_string(size) + " B\n  Tryb: " + mode + "\n  Modyfikacja: " + mt + "\n"
+        i += 1
+    end
+    return done_code(out, 0)
+end
+
+fn hex_to_oct(h: string) -> string is
+    let mut v: int = 0
+    let bs: [int] = string_to_bytes(h)
+    let mut i: int = 0
+    while i < array_len(bs) is
+        let c: int = bs[i]
+        let mut d: int = 0
+        if c >= 48 && c <= 57 is d = c - 48 else is d = c - 87 end
+        v = v * 16 + d
+        i += 1
+    end
+    let mut r: string = ""
+    if v == 0 is return "0" end
+    while v > 0 is
+        r = to_string(v % 8) + r
+        v = v / 8
+    end
+    return r
+end
+
+;; entry point: `/> raw` ; capture selects nothing (always prints, like hl) — result carries both
+pub fn run(vm: hlpp_vm::VM, raw: string) -> CU is
+    let args0: [string] = split_args(string_trim(raw))
+    if array_len(args0) == 0 is return quiet(0) end
+    let cmd: string = args0[0]
+    let mut args: [string] = []
+    let mut i: int = 1
+    while i < array_len(args0) is
+        args = array_push(args, args0[i])
+        i += 1
+    end
+    if cmd == "echo" is return tool_echo(args) end
+    if cmd == "cat" is return tool_cat(args) end
+    if cmd == "ls" is return tool_ls(args) end
+    if cmd == "grep" is return tool_grep(args) end
+    if cmd == "head" is return tool_head_tail(args, true) end
+    if cmd == "tail" is return tool_head_tail(args, false) end
+    if cmd == "wc" is return tool_wc(args) end
+    if cmd == "find" is return tool_find(args) end
+    if cmd == "cp" is return tool_cp(args) end
+    if cmd == "mv" is
+        if array_len(args) < 2 is return fail("[/> mv] Użycie: mv src dst") end
+        let r: int = hlpp_sys::move_path(args[0], args[1])
+        if r != 0 is return fail("No such file or directory (os error 2)") end
+        return quiet(0)
+    end
+    if cmd == "rm" is return tool_rm(args) end
+    if cmd == "mkdir" || cmd == "touch" is return tool_mkdir_touch(cmd, args) end
+    if cmd == "sort" is return tool_sort(args) end
+    if cmd == "uniq" is return tool_uniq(args) end
+    if cmd == "cut" is return tool_cut(args) end
+    if cmd == "tr" is return tool_tr(args) end
+    if cmd == "rev" is return tool_rev(args) end
+    if cmd == "basename" is
+        if array_len(args) == 0 is return fail("[/> basename] brak argumentu") end
+        let mut nm: string = hlpp_text::basename(args[0])
+        if array_len(args) > 1 is
+            while string_len(args[1]) > 0 && string_ends_with(nm, args[1]) is nm = string_slice(nm, 0, string_len(nm) - string_len(args[1])) end
+        end
+        hlpp_sys::outln(nm)
+        return CU { code: 0, cap: nm, err: "" }
+    end
+    if cmd == "dirname" is
+        if array_len(args) == 0 is return fail("[/> dirname] brak argumentu") end
+        let dn: string = hlpp_text::dirname(args[0])
+        hlpp_sys::outln(dn)
+        return CU { code: 0, cap: dn, err: "" }
+    end
+    if cmd == "stat" is return tool_stat(vm, args) end
+    if cmd == "du" is return tool_du(args) end
+    if cmd == "chmod" is
+        if array_len(args) < 2 is return fail("[/> chmod] Użycie: chmod mode plik...") end
+        let r2: hlpp_sys::Res = hlpp_sys::run_shell("chmod" + shell_join(args), vm.shell, false)
+        if r2.code != 0 is return fail("Permission denied (os error 13)") end
+        return quiet(0)
+    end
+    if cmd == "pwd" is
+        let d: string = cwd()
+        hlpp_sys::outln(d)
+        return CU { code: 0, cap: d, err: "" }
+    end
+    if cmd == "which" is
+        let mut out: string = ""
+        let mut code: int = 0
+        let mut k: int = 0
+        while k < array_len(args) is
+            let w: string = hlpp_sys::which_path(args[k])
+            if string_len(w) > 0 is
+                out = out + w + "\n"
+            else is
+                warn(args[k] + ": nie znaleziono")
+                code = 1
+            end
+            k += 1
+        end
+        return done_code(out, code)
+    end
+    if cmd == "env" is
+        if array_len(args) == 0 is return tool_external(vm, "env", []) end
+        let v: string = hlpp_sys::getenv(args[0])
+        hlpp_sys::outln(v)
+        return CU { code: 0, cap: v, err: "" }
+    end
+    if cmd == "date" is return tool_external(vm, "date", args) end
+    if cmd == "sleep" is
+        let n2: hlpp_num::Num = hlpp_num::val_or0(string_trim(hlpp_text::join(args, "")))
+        let ms: int = hlpp_num::trunc(hlpp_num::mul(n2, hlpp_num::of_int(1000)))
+        hlpp_sys::sleep_secs(ms)
+        return quiet(0)
+    end
+    if cmd == "true" is return quiet(0) end
+    if cmd == "false" is return quiet(1) end
+    if cmd == "seq" is return tool_seq(args) end
+    if cmd == "printf" is return tool_printf(args) end
+    if cmd == "yes" is
+        let mut txt: string = "y"
+        if array_len(args) > 0 is txt = hlpp_text::join(args, " ") end
+        let mut out2: string = ""
+        let mut c: int = 0
+        while c < 100 is
+            out2 = out2 + txt + "\n"
+            c += 1
+        end
+        return done(out2)
+    end
+    if cmd == "tee" is
+        let mut append: bool = false
+        let mut files: [string] = []
+        let mut j: int = 0
+        while j < array_len(args) is
+            if args[j] == "-a" is append = true else is files = array_push(files, args[j]) end
+            j += 1
+        end
+        let content: string = hlpp_sys::read_stdin()
+        hlpp_sys::out(content)
+        let mut f: int = 0
+        while f < array_len(files) is
+            if append is hlpp_sys::append_text(files[f], content) else is hlpp_sys::write_text(files[f], content) end
+            f += 1
+        end
+        return CU { code: 0, cap: trim_nl(content), err: "" }
+    end
+    if cmd == "xargs" is
+        if array_len(args) == 0 is return fail("[/> xargs] podaj komendę") end
+        let items: [string] = hlpp_text::words(hlpp_sys::read_stdin())
+        let mut full: [string] = []
+        let mut a2: int = 1
+        while a2 < array_len(args) is
+            full = array_push(full, args[a2])
+            a2 += 1
+        end
+        let mut b2: int = 0
+        while b2 < array_len(items) is
+            full = array_push(full, items[b2])
+            b2 += 1
+        end
+        let r3: hlpp_sys::Res = hlpp_sys::run_shell(hlpp_sys::quote(args[0]) + shell_join(full), vm.shell, true)
+        hlpp_sys::out(r3.out)
+        return CU { code: r3.code, cap: trim_nl(r3.out), err: "" }
+    end
+    return fail("[/>] nieznana komenda: '" + cmd + "'. Użyj > dla zewnętrznych narzędzi.")
+end

@@ -1,0 +1,927 @@
+mod hlpp_text
+mod hlpp_num
+mod hlpp_map
+mod hlpp_ops
+mod hlpp_lex
+mod hlpp_prog
+
+pub struct Ps is
+    pub toks: [hlpp_lex::Tok]
+    pub pos: int
+    pub p: hlpp_prog::Prog
+    pub arith_ok: bool
+    pub abs: [int]
+    pub apos: int
+    pub asrc: string
+    pub lint: bool
+end
+
+fn cur(ps: Ps) -> hlpp_lex::Tok is
+    return ps.toks[ps.pos]
+end
+
+fn adv(ps: Ps) is
+    if ps.pos < array_len(ps.toks) - 1 is ps.pos += 1 end
+end
+
+fn skip_nl(ps: Ps) is
+    while ps.toks[ps.pos].k == "Newline" || ps.toks[ps.pos].k == "Comment" is
+        if ps.pos >= array_len(ps.toks) - 1 is return end
+        ps.pos += 1
+    end
+end
+
+fn err(ps: Ps, msg: string, line: int) is
+    hlpp_prog::add_error(ps.p, msg, line)
+end
+
+fn ascii_alpha(c: int) -> bool is
+    return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+end
+
+fn ascii_alnum_(c: int) -> bool is
+    return ascii_alpha(c) || (c >= 48 && c <= 57) || c == 95
+end
+
+fn gen_ok(ps: Ps, what: string, line: int) is
+    if ps.p.gen == 1 is
+        err(ps, what + " wymaga gen 2 — zmień na `using <gen 2>`", line)
+    end
+end
+
+;; ── string interpolation → exactly ONE string on the operand stack ───────────
+
+fn finish(p: hlpp_prog::Prog, k: int) is
+    if k == 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, ""), 0, 0)
+    else if k > 1 is
+        hlpp_prog::emit(p, hlpp_ops::op_cat(), k, 0, 0)
+    end
+end
+
+pub fn has_vars(s: string) -> bool is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut i: int = 0
+    while i + 1 < n is
+        if bs[i] == 64 is
+            let nx: int = bs[i + 1]
+            if nx == 123 || ascii_alpha(nx) || nx == 95 is return true end
+        end
+        i += 1
+    end
+    return false
+end
+
+;; pushes pieces, returns how many
+fn pieces(p: hlpp_prog::Prog, s: string) -> int is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut cnt: int = 0
+    let mut i: int = 0
+    let mut ls: int = 0
+    while i < n is
+        let c: int = bs[i]
+        if c == 64 && i + 1 < n is
+            let nx: int = bs[i + 1]
+            if nx == 123 is
+                if i > ls is
+                    hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, string_slice(s, ls, i)), 0, 0)
+                    cnt += 1
+                end
+                i += 2
+                let st: int = i
+                while i < n && bs[i] != 125 is i += 1 end
+                let inner: string = string_slice(s, st, i)
+                if i < n is i += 1 end
+                finish(p, pieces(p, inner))
+                hlpp_prog::emit(p, hlpp_ops::op_dyn(), 0, 0, 0)
+                cnt += 1
+                ls = i
+                continue
+            end
+            if ascii_alpha(nx) || nx == 95 is
+                if i > ls is
+                    hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, string_slice(s, ls, i)), 0, 0)
+                    cnt += 1
+                end
+                i += 1
+                let st: int = i
+                while i < n && ascii_alnum_(bs[i]) is i += 1 end
+                let name: string = string_slice(s, st, i)
+                if i + 1 < n && bs[i] == 64 && (ascii_alpha(bs[i + 1]) || bs[i + 1] == 95) is
+                    ;; compound reference @a@b -> dynamic variable named (value of a)+(value of b)
+                    hlpp_prog::emit(p, hlpp_ops::op_var(), hlpp_prog::slot(p, name), 0, 0)
+                    let mut k: int = 1
+                    while i + 1 < n && bs[i] == 64 && (ascii_alpha(bs[i + 1]) || bs[i + 1] == 95) is
+                        i += 1
+                        let s2: int = i
+                        while i < n && ascii_alnum_(bs[i]) is i += 1 end
+                        hlpp_prog::emit(p, hlpp_ops::op_var(), hlpp_prog::slot(p, string_slice(s, s2, i)), 0, 0)
+                        k += 1
+                    end
+                    hlpp_prog::emit(p, hlpp_ops::op_cat(), k, 0, 0)
+                    hlpp_prog::emit(p, hlpp_ops::op_dyn(), 0, 0, 0)
+                else if p.edition >= 1 && i + 1 < n && bs[i] == 46 && (ascii_alpha(bs[i + 1]) || bs[i + 1] == 95) is
+                    i += 1
+                    let s3: int = i
+                    while i < n && ascii_alnum_(bs[i]) is i += 1 end
+                    hlpp_prog::emit(p, hlpp_ops::op_var(), hlpp_prog::slot(p, name), 0, 0)
+                    hlpp_prog::emit(p, hlpp_ops::op_fget(), hlpp_prog::lit(p, string_slice(s, s3, i)), 0, 0)
+                else is
+                    hlpp_prog::emit(p, hlpp_ops::op_var(), hlpp_prog::slot(p, name), 0, 0)
+                end
+                cnt += 1
+                ls = i
+                continue
+            end
+        end
+        i += 1
+    end
+    if n > ls is
+        hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, string_slice(s, ls, n)), 0, 0)
+        cnt += 1
+    end
+    return cnt
+end
+
+pub fn emit_str(p: hlpp_prog::Prog, s: string) is
+    finish(p, pieces(p, s))
+end
+
+;; ── arithmetic $( ... ) ─────────────────────────────────────────────────────
+
+fn a_ws(ps: Ps) is
+    while ps.apos < array_len(ps.abs) && (ps.abs[ps.apos] == 32 || ps.abs[ps.apos] == 9) is ps.apos += 1 end
+end
+
+fn a_expr(ps: Ps) is
+    a_term(ps)
+    a_ws(ps)
+    while ps.arith_ok && ps.apos < array_len(ps.abs) && (ps.abs[ps.apos] == 43 || ps.abs[ps.apos] == 45) is
+        let o: int = ps.abs[ps.apos]
+        ps.apos += 1
+        a_term(ps)
+        let mut code: int = 0
+        if o == 45 is code = 1 end
+        hlpp_prog::emit(ps.p, hlpp_ops::op_nbin(), code, 0, 0)
+        a_ws(ps)
+    end
+end
+
+fn a_term(ps: Ps) is
+    a_unary(ps)
+    a_ws(ps)
+    while ps.arith_ok && ps.apos < array_len(ps.abs) is
+        let o: int = ps.abs[ps.apos]
+        if o == 42 && ps.apos + 1 < array_len(ps.abs) && ps.abs[ps.apos + 1] == 42 is
+            ps.arith_ok = false
+            return
+        end
+        if o != 42 && o != 47 && o != 37 is return end
+        ps.apos += 1
+        a_unary(ps)
+        let mut code: int = 2
+        if o == 47 is code = 3 end
+        if o == 37 is code = 4 end
+        hlpp_prog::emit(ps.p, hlpp_ops::op_nbin(), code, 0, 0)
+        a_ws(ps)
+    end
+end
+
+fn a_unary(ps: Ps) is
+    a_ws(ps)
+    if ps.apos < array_len(ps.abs) && ps.abs[ps.apos] == 45 is
+        ps.apos += 1
+        a_unary(ps)
+        hlpp_prog::emit(ps.p, hlpp_ops::op_nneg(), 0, 0, 0)
+        return
+    end
+    a_atom(ps)
+end
+
+fn a_atom(ps: Ps) is
+    a_ws(ps)
+    if ps.apos >= array_len(ps.abs) is
+        ps.arith_ok = false
+        return
+    end
+    let c: int = ps.abs[ps.apos]
+    let s: string = ps.asrc
+    if c == 40 is
+        ps.apos += 1
+        a_expr(ps)
+        a_ws(ps)
+        if ps.apos < array_len(ps.abs) && ps.abs[ps.apos] == 41 is
+            ps.apos += 1
+        else is
+            ps.arith_ok = false
+        end
+        return
+    end
+    if c == 64 is
+        ps.apos += 1
+        let st: int = ps.apos
+        while ps.apos < array_len(ps.abs) && ascii_alnum_(ps.abs[ps.apos]) is ps.apos += 1 end
+        if ps.apos == st is
+            ps.arith_ok = false
+            return
+        end
+        let name: string = string_slice(s, st, ps.apos)
+        if ps.p.edition >= 1 && ps.apos + 1 < array_len(ps.abs) && ps.abs[ps.apos] == 46 && ascii_alpha(ps.abs[ps.apos + 1]) is
+            ps.apos += 1
+            let s2: int = ps.apos
+            while ps.apos < array_len(ps.abs) && ascii_alnum_(ps.abs[ps.apos]) is ps.apos += 1 end
+            hlpp_prog::emit(ps.p, hlpp_ops::op_nfld(), hlpp_prog::slot(ps.p, name), hlpp_prog::lit(ps.p, string_slice(s, s2, ps.apos)), 0)
+        else is
+            hlpp_prog::emit(ps.p, hlpp_ops::op_nvar(), hlpp_prog::slot(ps.p, name), 0, 0)
+        end
+        return
+    end
+    if (c >= 48 && c <= 57) || c == 46 is
+        let st: int = ps.apos
+        while ps.apos < array_len(ps.abs) && ((ps.abs[ps.apos] >= 48 && ps.abs[ps.apos] <= 57) || ps.abs[ps.apos] == 46) is ps.apos += 1 end
+        let txt: string = string_slice(s, st, ps.apos)
+        let nm: hlpp_num::Num = hlpp_num::parse(txt)
+        if !nm.ok is
+            ps.arith_ok = false
+            return
+        end
+        hlpp_prog::emit(ps.p, hlpp_ops::op_nlit(), hlpp_prog::lit(ps.p, hlpp_num::fmt(nm)), 0, 0)
+        return
+    end
+    ps.arith_ok = false
+end
+
+;; compiles `expr` and stores into var (assign: "" = print, "obj.field" = field)
+fn comp_arith(ps: Ps, expr: string, assign: string, line: int) is
+    let p: hlpp_prog::Prog = ps.p
+    let start: int = array_len(p.code)
+    let sv_abs: [int] = ps.abs
+    let sv_pos: int = ps.apos
+    let sv_src: string = ps.asrc
+    let t: string = string_trim(expr)
+    ps.abs = string_to_bytes(t)
+    ps.asrc = t
+    ps.apos = 0
+    ps.arith_ok = true
+    hlpp_prog::emit(p, hlpp_ops::op_nbeg(), 0, 0, 0)
+    if array_len(ps.abs) == 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_nlit(), hlpp_prog::lit(p, "0"), 0, 0)
+    else is
+        a_expr(ps)
+        a_ws(ps)
+        if ps.apos < array_len(ps.abs) is ps.arith_ok = false end
+    end
+    let ok: bool = ps.arith_ok
+    ps.abs = sv_abs
+    ps.apos = sv_pos
+    ps.asrc = sv_src
+    if ok is
+        let src: int = hlpp_prog::lit(p, t)
+        let dot: int = string_find(assign, ".")
+        if dot > 0 is
+            let o: string = string_slice(assign, 0, dot)
+            let f: string = string_slice(assign, dot + 1, string_len(assign))
+            hlpp_prog::emit(p, hlpp_ops::op_nendf(), hlpp_prog::slot(p, o), hlpp_prog::lit(p, f), 0)
+        else if string_len(assign) > 0 is
+            hlpp_prog::emit(p, hlpp_ops::op_nend(), hlpp_prog::slot(p, assign), src, 0)
+        else is
+            hlpp_prog::emit(p, hlpp_ops::op_nend(), 0 - 1, src, 0)
+        end
+        return
+    end
+    ;; unsupported syntax (**, <<, comparisons, ...): same fallback as hl — the shell evaluates it
+    while array_len(p.code) > start is
+        p.code = array_pop(p.code)
+    end
+    while array_len(p.lines) * 4 > start is
+        p.lines = array_pop(p.lines)
+    end
+    emit_str(p, t)
+    hlpp_prog::emit(p, hlpp_ops::op_ashell(), 0, 0, 0)
+    let dot: int = string_find(assign, ".")
+    if dot > 0 is
+        let o: string = string_slice(assign, 0, dot)
+        let f: string = string_slice(assign, dot + 1, string_len(assign))
+        hlpp_prog::emit(p, hlpp_ops::op_fset(), hlpp_prog::slot(p, o), hlpp_prog::lit(p, f), 0)
+    else if string_len(assign) > 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_set(), hlpp_prog::slot(p, assign), 1, 0)
+    else is
+        hlpp_prog::emit(p, hlpp_ops::op_print(), 0, 0, 0)
+    end
+end
+
+;; ── conditions ──────────────────────────────────────────────────────────────
+
+fn find_op(s: string, op: string) -> int is
+    let mut from: int = 0
+    let n: int = string_len(s)
+    let ol: int = string_len(op)
+    while from + ol <= n is
+        let sub: string = string_slice(s, from, from + ol)
+        if sub == op is
+            if op == ">" || op == "<" is
+                if from + 1 >= n || string_slice(s, from + 1, from + 2) != "=" is return from end
+            else is
+                return from
+            end
+        end
+        from += 1
+    end
+    return 0 - 1
+end
+
+fn strip_dq(s: string) -> string is
+    let mut r: string = s
+    while string_starts_with(r, "\"") is r = string_slice(r, 1, string_len(r)) end
+    while string_ends_with(r, "\"") is r = string_slice(r, 0, string_len(r) - 1) end
+    return r
+end
+
+;; operand encoding for cmpv: >= 0 variable slot, < 0 literal index  (-(idx)-1)
+fn operand(p: hlpp_prog::Prog, raw: string) -> int is
+    let bs: [int] = string_to_bytes(raw)
+    let n: int = array_len(bs)
+    if n > 1 && bs[0] == 64 is
+        let mut ok: bool = true
+        let mut i: int = 1
+        while i < n is
+            if !ascii_alnum_(bs[i]) is ok = false end
+            i += 1
+        end
+        if ok && (ascii_alpha(bs[1]) || bs[1] == 95) is return hlpp_prog::slot(p, string_slice(raw, 1, n)) end
+    end
+    if !has_vars(raw) is return 0 - hlpp_prog::lit(p, raw) - 1 end
+    return 0 - 1000000000
+end
+
+;; leaves the truth value in the VM flag
+fn comp_cond(ps: Ps, text: string) is
+    let p: hlpp_prog::Prog = ps.p
+    let c: string = string_trim(text)
+    if string_len(c) == 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, ""), 0, 0)
+        hlpp_prog::emit(p, hlpp_ops::op_cond(), 0, 0, 0)
+        return
+    end
+    let ops: [string] = ["==", "!=", ">=", "<=", ">", "<"]
+    let mut oi: int = 0
+    while oi < 6 is
+        let pos: int = find_op(c, ops[oi])
+        if pos >= 0 is
+            let l: string = string_trim(string_slice(c, 0, pos))
+            let r: string = strip_dq(string_trim(string_slice(c, pos + string_len(ops[oi]), string_len(c))))
+            let lo: int = operand(p, l)
+            let ro: int = operand(p, r)
+            let none: int = 0 - 1000000000
+            if lo != none && ro != none is
+                hlpp_prog::emit(p, hlpp_ops::op_cmpv(), oi, lo, ro)
+            else is
+                emit_str(p, l)
+                emit_str(p, r)
+                hlpp_prog::emit(p, hlpp_ops::op_cmps(), oi, 0, 0)
+            end
+            return
+        end
+        oi += 1
+    end
+    emit_str(p, c)
+    hlpp_prog::emit(p, hlpp_ops::op_cond(), 0, 0, 0)
+end
+
+;; ── variable declarations ───────────────────────────────────────────────────
+
+fn store_target(ps: Ps, name: string, typ: int) is
+    let p: hlpp_prog::Prog = ps.p
+    let dot: int = string_find(name, ".")
+    if dot > 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_fset(), hlpp_prog::slot(p, string_slice(name, 0, dot)), hlpp_prog::lit(p, string_slice(name, dot + 1, string_len(name))), 0)
+    else is
+        hlpp_prog::emit(p, hlpp_ops::op_set(), hlpp_prog::slot(p, name), typ, 0)
+    end
+end
+
+fn set_const(ps: Ps, name: string, text: string, typ: int) is
+    let p: hlpp_prog::Prog = ps.p
+    let dot: int = string_find(name, ".")
+    if dot > 0 is
+        hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, text), 0, 0)
+        store_target(ps, name, typ)
+    else is
+        hlpp_prog::emit(p, hlpp_ops::op_setlit(), hlpp_prog::slot(p, name), hlpp_prog::lit(p, text), typ)
+    end
+end
+
+fn comp_vardecl(ps: Ps, name: string, typ: string, raw: string, line: int) is
+    let p: hlpp_prog::Prog = ps.p
+    let value: string = string_trim(raw)
+    if typ == "int" is
+        let ip: hlpp_text::IntParse = hlpp_text::parse_i(value)
+        if ip.ok is
+            let v: int = ip.v
+            set_const(ps, name, to_string(v), 2)
+            return
+        end
+    end
+    if typ == "float" is
+        let nm: hlpp_num::Num = hlpp_num::parse(value)
+        if nm.ok is
+            set_const(ps, name, hlpp_num::fmt(nm), 2)
+            return
+        end
+    end
+    if typ == "bool" is
+        if value == "true" || value == "false" is
+            set_const(ps, name, value, 3)
+            return
+        end
+    end
+    if typ == "str" || typ == "string" is
+        set_const(ps, name, strip_dq(value), 1)
+        return
+    end
+    if string_len(value) >= 2 && string_starts_with(value, "\"") && string_ends_with(value, "\"") is
+        let inner: string = string_slice(value, 1, string_len(value) - 1)
+        if has_vars(inner) is
+            emit_str(p, inner)
+            store_target(ps, name, 1)
+        else is
+            set_const(ps, name, inner, 1)
+        end
+        return
+    end
+    if string_starts_with(value, "$(") && string_ends_with(value, ")") is
+        let inner: string = string_trim(string_slice(value, 2, string_len(value) - 1))
+        comp_arith(ps, inner, name, line)
+        return
+    end
+    let ip2: hlpp_text::IntParse = hlpp_text::parse_i(value)
+    if ip2.ok is
+        let v2: int = ip2.v
+        set_const(ps, name, to_string(v2), 2)
+        return
+    end
+    let nm2: hlpp_num::Num = hlpp_num::parse(value)
+    if nm2.ok is
+        set_const(ps, name, hlpp_num::fmt(nm2), 2)
+        return
+    end
+    if value == "true" || value == "false" is
+        set_const(ps, name, value, 3)
+        return
+    end
+    if has_vars(value) is
+        emit_str(p, value)
+        store_target(ps, name, 1)
+    else is
+        set_const(ps, name, value, 1)
+    end
+end
+
+;; ── statements ──────────────────────────────────────────────────────────────
+
+fn block(ps: Ps) is
+    loop_nodes(ps)
+end
+
+;; parses statements up to (and consuming) Done / Eof
+fn loop_nodes(ps: Ps) is
+    while true is
+        skip_nl(ps)
+        let t: hlpp_lex::Tok = cur(ps)
+        if t.k == "Done" is
+            adv(ps)
+            return
+        end
+        if t.k == "Eof" is
+            err(ps, "Brakujące 'done' — blok nie jest zamknięty", t.line)
+            return
+        end
+        node(ps)
+    end
+end
+
+fn set_exit0(p: hlpp_prog::Prog) is
+    hlpp_prog::emit(p, hlpp_ops::op_nop(), 1, 0, 0)
+end
+
+fn is_echo(cmd: string) -> bool is
+    let c: string = string_trim(cmd)
+    return c == "echo" || string_starts_with(c, "echo ")
+end
+
+fn node(ps: Ps) is
+    let p: hlpp_prog::Prog = ps.p
+    let t: hlpp_lex::Tok = cur(ps)
+    let k: string = t.k
+    let line: int = t.line
+    p.cur_line = line
+    if k == "Newline" || k == "Comment" || k == "Str" || k == "Number" || k == "Bool" || k == "Ident" || k == "SwitchArm" || k == "ExportItem" || k == "ExportEnd" is
+        adv(ps)
+        return
+    end
+    if k == "Using" is
+        adv(ps)
+        return
+    end
+    adv(ps)
+    if ps.lint && k == "CmdPipe" && t.n == 0 && is_echo(t.a) is
+        err(ps, "`echo` jest zabronione w blokach komend HL", line)
+    end
+    if k == "Print" is
+        if has_vars(t.a) is
+            emit_str(p, t.a)
+            hlpp_prog::emit(p, hlpp_ops::op_print(), 0, 0, 0)
+        else is
+            hlpp_prog::emit(p, hlpp_ops::op_printlit(), hlpp_prog::lit(p, t.a), 0, 0)
+        end
+    else if k == "Cmd" is
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_exec(), t.n, 1, 0)
+    else if k == "CmdPipe" is
+        gen_ok(ps, "PipeToVar (|>)", line)
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_execcap(), t.n, hlpp_prog::slot(p, t.b), 0)
+    else if k == "Builtin" is
+        gen_ok(ps, "/> (wbudowane coreutils)", line)
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_builtin(), 0, 0, 0)
+    else if k == "BuiltinPipe" is
+        gen_ok(ps, "/> ... |> @var", line)
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_builtincap(), hlpp_prog::slot(p, t.b), 0, 0)
+    else if k == "Quick" is
+        if hlpp_map::has(p.arenas, t.a) is
+            gen_ok(ps, "Arena function call (::)", line)
+            emit_str(p, t.b)
+            hlpp_prog::emit(p, hlpp_ops::op_callarena(), hlpp_prog::lit(p, t.a), 0, 0)
+        else is
+            emit_str(p, t.b)
+            hlpp_prog::emit(p, hlpp_ops::op_quick(), hlpp_prog::lit(p, t.a), 0, 0)
+        end
+    else if k == "QuickPipe" is
+        emit_str(p, t.b)
+        hlpp_prog::emit(p, hlpp_ops::op_quickcap(), hlpp_prog::lit(p, t.a), hlpp_prog::slot(p, t.c), 0)
+    else if k == "ArenaDef" is
+        gen_ok(ps, "Arena function (:: def)", line)
+        hlpp_map::put(p.arenas, t.a, 1)
+        let at: int = hlpp_prog::emit(p, hlpp_ops::op_defarena(), hlpp_prog::lit(p, t.a), 0, hlpp_prog::lit(p, t.b))
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_ret(), 0, 0, 0)
+        hlpp_prog::patch_b(p, at, hlpp_prog::here(p))
+    else if k == "FuncDef" is
+        let at: int = hlpp_prog::emit(p, hlpp_ops::op_deffunc(), hlpp_prog::lit(p, t.a), 0, 0)
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_ret(), 0, 0, 0)
+        hlpp_prog::patch_b(p, at, hlpp_prog::here(p))
+    else if k == "FuncCall" is
+        hlpp_prog::emit(p, hlpp_ops::op_call(), hlpp_prog::lit(p, t.a), 0, 0)
+    else if k == "Repeat" is
+        skip_nl(ps)
+        let cnt: int = t.n
+        hlpp_prog::emit(p, hlpp_ops::op_rptinit(), cnt, 0, 0)
+        let top: int = hlpp_prog::here(p)
+        let nx: int = hlpp_prog::emit(p, hlpp_ops::op_rptnext(), 0, 0, 0)
+        let nt: hlpp_lex::Tok = cur(ps)
+        if nt.k != "Done" && nt.k != "Eof" is node(ps) end
+        hlpp_prog::emit(p, hlpp_ops::op_jmp(), top, 0, 0)
+        hlpp_prog::patch_a(p, nx, hlpp_prog::here(p))
+        hlpp_prog::emit(p, hlpp_ops::op_rptend(), 0, 0, 0)
+    else if k == "FileImport" is
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_fileimport(), hlpp_prog::lit(p, t.b), t.n, 0)
+    else if k == "DirImport" is
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_dirimport(), 0, 0, 0)
+    else if k == "Import" is
+        hlpp_prog::emit(p, hlpp_ops::op_import(), hlpp_prog::lit(p, t.a), hlpp_prog::lit(p, t.b), t.n)
+    else if k == "Dep" is
+        hlpp_prog::emit(p, hlpp_ops::op_dep(), hlpp_prog::lit(p, t.a), hlpp_prog::lit(p, t.b), 0)
+    else if k == "Go" is
+        let gat: int = hlpp_prog::emit(p, hlpp_ops::op_gobeg(), hlpp_prog::lit(p, t.a), 0, 0)
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_goend(), 0, 0, 0)
+        hlpp_prog::patch_b(p, gat, hlpp_prog::here(p))
+    else if k == "ChanDecl" is
+        hlpp_prog::emit(p, hlpp_ops::op_chandecl(), hlpp_prog::lit(p, t.a), 0, 0)
+    else if k == "ChanOp" is
+        hlpp_prog::emit(p, hlpp_ops::op_chanop(), hlpp_prog::lit(p, t.a), 0, 0)
+    else if k == "ForIn" is
+        gen_ok(ps, "ForIn (@ x in lista)", line)
+        emit_str(p, t.b)
+        hlpp_prog::emit(p, hlpp_ops::op_forinit(), 0, 0, 0)
+        let top: int = hlpp_prog::emit(p, hlpp_ops::op_fornext(), hlpp_prog::slot(p, t.a), 0, 0)
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_jmp(), top, 0, 0)
+        hlpp_prog::patch_b(p, top, hlpp_prog::here(p))
+        hlpp_prog::emit(p, hlpp_ops::op_forend(), 0, 0, 0)
+    else if k == "While" is
+        gen_ok(ps, "WhileLoop (?~)", line)
+        hlpp_prog::emit(p, hlpp_ops::op_whinit(), 0, 0, 0)
+        let top: int = hlpp_prog::emit(p, hlpp_ops::op_whtick(), 0, 0, 0)
+        comp_cond(ps, t.a)
+        let jf: int = hlpp_prog::emit(p, hlpp_ops::op_jfalse(), 0, 0, 0)
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_jmp(), top, 0, 0)
+        hlpp_prog::patch_a(p, jf, hlpp_prog::here(p))
+        hlpp_prog::emit(p, hlpp_ops::op_whend(), 0, 0, 0)
+    else if k == "IfOk" || k == "IfErr" is
+        let mut jop: int = hlpp_ops::op_jiferr()
+        if k == "IfErr" is jop = hlpp_ops::op_jifok() end
+        let j: int = hlpp_prog::emit(p, jop, 0, 0, 0)
+        block(ps)
+        let je: int = hlpp_prog::emit(p, hlpp_ops::op_jmp(), 0, 0, 0)
+        hlpp_prog::patch_a(p, j, hlpp_prog::here(p))
+        set_exit0(p)
+        hlpp_prog::patch_a(p, je, hlpp_prog::here(p))
+    else if k == "Switch" is
+        gen_ok(ps, "MatchExpr (? switch)", line)
+        comp_switch(ps, t.a)
+    else if k == "Arith" is
+        gen_ok(ps, "Arytmetyka $()", line)
+        comp_arith(ps, t.a, t.b, line)
+    else if k == "HosApi" is
+        emit_str(p, t.b)
+        hlpp_prog::emit(p, hlpp_ops::op_hos(), hlpp_prog::lit(p, t.a), 0, 0)
+    else if k == "Bg" is
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_bg(), 0, 0, 0)
+    else if k == "Hsh" is
+        emit_str(p, t.a)
+        hlpp_prog::emit(p, hlpp_ops::op_hsh(), 0, 0, 0)
+    else if k == "VarDecl" is
+        comp_vardecl(ps, t.a, t.b, t.c, line)
+    else if k == "VarRef" is
+        hlpp_prog::emit(p, hlpp_ops::op_varprint(), hlpp_prog::slot(p, t.a), 0, 0)
+    else if k == "ExportSingle" is
+        emit_str(p, t.b)
+        hlpp_prog::emit(p, hlpp_ops::op_export(), hlpp_prog::slot(p, t.a), 0, 0)
+    else if k == "ExportStart" is
+        let mut cnt: int = 0
+        while true is
+            let it: hlpp_lex::Tok = cur(ps)
+            if it.k == "ExportEnd" is
+                adv(ps)
+                break
+            end
+            if it.k == "Eof" is
+                err(ps, "Brakujące ']' — lista eksportu nie jest zamknięta", it.line)
+                break
+            end
+            adv(ps)
+            if it.k == "ExportItem" is
+                if cnt > 0 is
+                    hlpp_prog::emit(p, hlpp_ops::op_lit(), hlpp_prog::lit(p, ":"), 0, 0)
+                    cnt += 1
+                end
+                emit_str(p, it.a)
+                cnt += 1
+            end
+        end
+        finish(p, cnt)
+        hlpp_prog::emit(p, hlpp_ops::op_export(), hlpp_prog::slot(p, t.a), 0, 0)
+    else if k == "ExternStart" is
+        block(ps)
+        hlpp_prog::emit(p, hlpp_ops::op_extern(), hlpp_prog::lit(p, t.a), hlpp_prog::lit(p, t.b), 0)
+    else if k == "ClassDef" is
+        comp_class(ps, t.a, t.b, line)
+    else if k == "New" is
+        emit_str(p, t.c)
+        hlpp_prog::emit(p, hlpp_ops::op_new(), hlpp_prog::lit(p, t.a), hlpp_prog::slot(p, t.b), 0)
+    else if k == "MCall" is
+        emit_str(p, t.c)
+        hlpp_prog::emit(p, hlpp_ops::op_mcall(), hlpp_prog::slot(p, t.a), hlpp_prog::lit(p, t.b), t.n)
+        if t.n == 1 is
+            let vt: hlpp_lex::Tok = cur(ps)
+            if vt.k == "MCallVar" is
+                adv(ps)
+                hlpp_prog::emit(p, hlpp_ops::op_mret(), hlpp_prog::slot(p, vt.a), 0, 0)
+            end
+        end
+    else if k == "Delete" is
+        hlpp_prog::emit(p, hlpp_ops::op_delete(), hlpp_prog::slot(p, t.a), 0, 0)
+    else if k == "MethodDef" || k == "MCallVar" is
+        err(ps, "Nieoczekiwany token " + k + " poza klasą", line)
+    else if k == "Done" || k == "Eof" is
+        return
+    else is
+        err(ps, "Nieoczekiwany token " + k, line)
+    end
+end
+
+fn comp_switch(ps: Ps, subject: string) is
+    let p: hlpp_prog::Prog = ps.p
+    emit_str(p, subject)
+    hlpp_prog::emit(p, hlpp_ops::op_swbeg(), 0, 0, 0)
+    ;; first pass: collect arms (pattern, token range) by compiling bodies after a dispatch table.
+    ;; Dispatch table is emitted first, so we need the arm patterns before bodies: pre-scan tokens.
+    let mut pats: [string] = []
+    let mut depth: int = 0
+    let mut i: int = ps.pos
+    let n: int = array_len(ps.toks)
+    while i < n is
+        let t: hlpp_lex::Tok = ps.toks[i]
+        if t.k == "Eof" is break end
+        if depth == 0 && t.k == "SwitchArm" is pats = array_push(pats, t.a) end
+        if t.k == "Done" && depth == 0 is break end
+        if is_block_start(t.k) is depth += 1 end
+        if t.k == "Done" is depth -= 1 end
+        i += 1
+    end
+    let mut jumps: [int] = []
+    let mut wild: int = 0 - 1
+    let mut a: int = 0
+    while a < array_len(pats) is
+        let pat: string = string_trim(pats[a])
+        if pat == "*" is
+            wild = a
+            jumps = array_push(jumps, 0 - 1)
+        else is
+            let mut op: int = hlpp_ops::op_swcmp()
+            if has_vars(pat) is op = hlpp_ops::op_swcmpi() end
+            let at: int = hlpp_prog::emit(p, op, hlpp_prog::lit(p, pat), 0, 0)
+            jumps = array_push(jumps, at)
+        end
+        a += 1
+    end
+    let jdefault: int = hlpp_prog::emit(p, hlpp_ops::op_jmp(), 0, 0, 0)
+    ;; bodies
+    let mut ends: [int] = []
+    let mut arm: int = 0 - 1
+    let mut wild_target: int = 0 - 1
+    while true is
+        skip_nl(ps)
+        let t: hlpp_lex::Tok = cur(ps)
+        if t.k == "Done" is
+            adv(ps)
+            break
+        end
+        if t.k == "Eof" is
+            err(ps, "Brakujące 'done' — blok nie jest zamknięty", t.line)
+            break
+        end
+        if t.k == "SwitchArm" is
+            if arm >= 0 is
+                let je: int = hlpp_prog::emit(p, hlpp_ops::op_jmp(), 0, 0, 0)
+                ends = array_push(ends, je)
+            end
+            arm += 1
+            adv(ps)
+            let here: int = hlpp_prog::here(p)
+            if jumps[arm] >= 0 is
+                hlpp_prog::patch_b(p, jumps[arm], here)
+            else is
+                wild_target = here
+            end
+        else is
+            if arm < 0 is
+                adv(ps)
+            else is
+                node(ps)
+            end
+        end
+    end
+    let endpc: int = hlpp_prog::here(p)
+    if wild_target >= 0 is
+        hlpp_prog::patch_a(p, jdefault, wild_target)
+    else is
+        hlpp_prog::patch_a(p, jdefault, endpc)
+    end
+    let mut e: int = 0
+    while e < array_len(ends) is
+        hlpp_prog::patch_a(p, ends[e], endpc)
+        e += 1
+    end
+    hlpp_prog::emit(p, hlpp_ops::op_swend(), 0, 0, 0)
+end
+
+fn is_block_start(k: string) -> bool is
+    return k == "FuncDef" || k == "ArenaDef" || k == "Go" || k == "ForIn" || k == "While" || k == "IfOk" || k == "IfErr" || k == "Switch" || k == "ExternStart" || k == "ClassDef" || k == "MethodDef"
+end
+
+fn comp_class(ps: Ps, name: string, parent: string, line: int) is
+    let p: hlpp_prog::Prog = ps.p
+    hlpp_prog::emit(p, hlpp_ops::op_classdef(), hlpp_prog::lit(p, name), hlpp_prog::lit(p, parent), 0)
+    let saved: string = p.class_name
+    p.class_name = name
+    while true is
+        skip_nl(ps)
+        let t: hlpp_lex::Tok = cur(ps)
+        if t.k == "Done" is
+            adv(ps)
+            break
+        end
+        if t.k == "Eof" is
+            err(ps, "Brakujące 'done' — klasa " + name + " nie jest zamknięta", t.line)
+            break
+        end
+        adv(ps)
+        if t.k == "MethodDef" is
+            let at: int = hlpp_prog::emit(p, hlpp_ops::op_defmeth(), hlpp_prog::lit(p, t.a), 0, hlpp_prog::lit(p, t.b))
+            block(ps)
+            hlpp_prog::emit(p, hlpp_ops::op_ret(), 0, 0, 0)
+            hlpp_prog::patch_b(p, at, hlpp_prog::here(p))
+        else if t.k == "VarDecl" is
+            hlpp_prog::emit(p, hlpp_ops::op_fielddef(), hlpp_prog::lit(p, t.a), hlpp_prog::lit(p, string_trim(strip_dq(string_trim(t.c)))), 1)
+        else is
+            err(ps, "W klasie dozwolone są tylko `% pole = wartość` i `:. metoda def`", t.line)
+        end
+    end
+    p.class_name = saved
+end
+
+;; ── entry points ────────────────────────────────────────────────────────────
+
+fn parse_using(ps: Ps, text: string, line: int) is
+    let p: hlpp_prog::Prog = ps.p
+    let t: string = string_trim(text)
+    let mut inner: string = string_trim(string_slice(t, 5, string_len(t)))
+    if string_starts_with(inner, "<") is inner = string_slice(inner, 1, string_len(inner)) end
+    if string_ends_with(inner, ">") is inner = string_slice(inner, 0, string_len(inner) - 1) end
+    inner = string_trim(inner)
+    let low: string = string_lower(inner)
+    ;; Hacker Lang++ generations are years: `gen 2026` and ROLLING (= newest, today the same as 2026)
+    if low == "rolling" is
+        p.edition = 1
+        p.gen = 2026
+        return
+    end
+    if string_starts_with(low, "gen") is
+        let ns: string = string_trim(string_slice(low, 3, string_len(low)))
+        let ip: hlpp_text::IntParse = hlpp_text::parse_i(ns)
+        if !ip.ok is
+            err(ps, "Błąd deklaracji gena: oczekiwano roku (np. 2026) lub ROLLING, dostano '" + ns + "'", line)
+            return
+        end
+        let g: int = ip.v
+        let y2026: int = 2026
+        if g == y2026 is
+            p.edition = 1
+            p.gen = 2026
+        else if g == 1 || g == 2 is
+            ;; hl compatibility generations: same engine, hl semantics, no OOP
+            p.edition = 0
+            p.gen = g
+        else is
+            err(ps, "Gen " + to_string(g) + " nie jest wspierany (Hacker Lang++: gen 2026, ROLLING; zgodność z hl: gen 1, gen 2)", line)
+        end
+        return
+    end
+    err(ps, "Błąd deklaracji gena: oczekiwano 'gen 2026' lub 'ROLLING', dostano '" + inner + "'", line)
+end
+
+;; Compile source text and append to the program; returns the entry pc.
+;; is_main: finish with HALT, otherwise with RET (so the chunk can be CALLed by imports).
+pub fn compile_chunk(p: hlpp_prog::Prog, src: string, is_main: bool) -> int is
+    let mut lx: hlpp_lex::Lx = hlpp_lex::tokenize(src, p.edition)
+    if string_len(lx.err) > 0 && p.edition == 0 is
+        ;; the `using <gen 2026>` header may only appear after Hacker Lang++ sigils were lexed: retry as ++
+        let lx1: hlpp_lex::Lx = hlpp_lex::tokenize(src, 1)
+        if string_len(lx1.err) == 0 is lx = lx1 end
+    end
+    let entry: int = hlpp_prog::here(p)
+    if string_len(lx.err) > 0 is
+        hlpp_prog::add_error(p, "Błąd leksera: " + lx.err, lx.err_line)
+        return entry
+    end
+    let ps: Ps = Ps { toks: lx.toks, pos: 0, p: p, arith_ok: true, abs: [], apos: 0, asrc: "", lint: is_main }
+    ;; the first `using` declaration (before any statement) selects gen / edition
+    let mut i: int = 0
+    let mut seen_stmt: bool = false
+    while i < array_len(ps.toks) is
+        let t: hlpp_lex::Tok = ps.toks[i]
+        if t.k == "Using" && !seen_stmt is
+            parse_using(ps, t.a, t.line)
+            if lx.edition != p.edition is
+                ;; edition switched by `using <hl++>`: re-lex with the new edition
+                let lx2: hlpp_lex::Lx = hlpp_lex::tokenize(src, p.edition)
+                ps.toks = lx2.toks
+            end
+            break
+        end
+        if t.k != "Newline" && t.k != "Comment" && t.k != "Using" is seen_stmt = true end
+        i += 1
+    end
+    while true is
+        skip_nl(ps)
+        let t: hlpp_lex::Tok = cur(ps)
+        if t.k == "Eof" is break end
+        if t.k == "Done" is
+            adv(ps)
+            continue
+        end
+        let before: int = ps.pos
+        node(ps)
+        if ps.pos == before is
+            adv(ps)
+            err(ps, "Parser nie przesunął pozycji przy tokenie " + t.k, t.line)
+        end
+    end
+    if is_main is
+        hlpp_prog::emit(p, hlpp_ops::op_halt(), 0, 0, 0)
+    else is
+        hlpp_prog::emit(p, hlpp_ops::op_ret(), 0, 0, 0)
+    end
+    return entry
+end

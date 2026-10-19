@@ -1,0 +1,428 @@
+use "std -> fs" from "fs"
+mod hlpp_text
+mod hlpp_sys
+mod hlpp_vm
+
+;; ── flat JSON tree (no recursive types in H#: children are index links) ─────────────────
+;; t: 0 object, 1 array, 2 string, 3 number/bool/null (raw text in s)
+struct J is
+    src: string
+    bs: [int]
+    pos: int
+    t: [int]
+    s: [string]
+    key: [string]
+    first: [int]
+    last: [int]
+    next: [int]
+    err: string
+end
+
+fn jnew(src: string) -> J is
+    return J { src: src, bs: string_to_bytes(src), pos: 0, t: [], s: [], key: [], first: [], last: [], next: [], err: "" }
+end
+
+fn jnode(j: J, t: int, s: string, key: string) -> int is
+    j.t = array_push(j.t, t)
+    j.s = array_push(j.s, s)
+    j.key = array_push(j.key, key)
+    j.first = array_push(j.first, 0 - 1)
+    j.last = array_push(j.last, 0 - 1)
+    j.next = array_push(j.next, 0 - 1)
+    return array_len(j.t) - 1
+end
+
+fn jlink(j: J, parent: int, child: int) is
+    if j.first[parent] < 0 is
+        j.first[parent] = child
+    else is
+        j.next[j.last[parent]] = child
+    end
+    j.last[parent] = child
+end
+
+fn jws(j: J) is
+    let n: int = array_len(j.bs)
+    while j.pos < n && (j.bs[j.pos] == 32 || j.bs[j.pos] == 10 || j.bs[j.pos] == 13 || j.bs[j.pos] == 9) is j.pos += 1 end
+end
+
+fn hexv(c: int) -> int is
+    if c >= 48 && c <= 57 is return c - 48 end
+    if c >= 97 && c <= 102 is return c - 87 end
+    if c >= 65 && c <= 70 is return c - 55 end
+    return 0
+end
+
+;; UTF-8 encode a code point through byte-exact hex escapes is impossible in H# strings, so
+;; non-ASCII \uXXXX is collected as raw bytes and re-assembled with bytes_to_string.
+fn jstr(j: J) -> string is
+    let n: int = array_len(j.bs)
+    j.pos += 1
+    let mut out: [int] = []
+    while j.pos < n && j.bs[j.pos] != 34 is
+        let c: int = j.bs[j.pos]
+        if c == 92 && j.pos + 1 < n is
+            let e: int = j.bs[j.pos + 1]
+            j.pos += 2
+            if e == 110 is out = array_push(out, 10)
+            else if e == 116 is out = array_push(out, 9)
+            else if e == 114 is out = array_push(out, 13)
+            else if e == 98 is out = array_push(out, 8)
+            else if e == 102 is out = array_push(out, 12)
+            else if e == 117 && j.pos + 3 < n is
+                let cp: int = hexv(j.bs[j.pos]) * 4096 + hexv(j.bs[j.pos + 1]) * 256 + hexv(j.bs[j.pos + 2]) * 16 + hexv(j.bs[j.pos + 3])
+                j.pos += 4
+                let lim1: int = 128
+                let lim2: int = 2048
+                if cp < lim1 is
+                    out = array_push(out, cp)
+                else if cp < lim2 is
+                    let b1: int = 192 + cp / 64
+                    let b2: int = 128 + cp % 64
+                    out = array_push(out, b1)
+                    out = array_push(out, b2)
+                else is
+                    let b1: int = 224 + cp / 4096
+                    let b2: int = 128 + (cp / 64) % 64
+                    let b3: int = 128 + cp % 64
+                    out = array_push(out, b1)
+                    out = array_push(out, b2)
+                    out = array_push(out, b3)
+                end
+            else is out = array_push(out, e) end
+        else is
+            out = array_push(out, c)
+            j.pos += 1
+        end
+    end
+    j.pos += 1
+    return bytes_to_string(out, array_len(out))
+end
+
+fn jval(j: J, key: string) -> int is
+    jws(j)
+    let n: int = array_len(j.bs)
+    if j.pos >= n is
+        j.err = "niespodziewany koniec JSON"
+        return jnode(j, 3, "null", key)
+    end
+    let c: int = j.bs[j.pos]
+    if c == 123 is
+        let me: int = jnode(j, 0, "", key)
+        j.pos += 1
+        jws(j)
+        if j.pos < n && j.bs[j.pos] == 125 is
+            j.pos += 1
+            return me
+        end
+        while j.pos < n && string_len(j.err) == 0 is
+            jws(j)
+            if j.pos >= n || j.bs[j.pos] != 34 is
+                j.err = "oczekiwano klucza w obiekcie JSON (bajt " + to_string(j.pos) + ")"
+                return me
+            end
+            let k: string = jstr(j)
+            jws(j)
+            if j.pos >= n || j.bs[j.pos] != 58 is
+                j.err = "oczekiwano ':' w obiekcie JSON"
+                return me
+            end
+            j.pos += 1
+            let ch: int = jval(j, k)
+            jlink(j, me, ch)
+            jws(j)
+            if j.pos < n && j.bs[j.pos] == 44 is
+                j.pos += 1
+            else is
+                break
+            end
+        end
+        jws(j)
+        if j.pos < n && j.bs[j.pos] == 125 is j.pos += 1 else is j.err = "oczekiwano '}'" end
+        return me
+    end
+    if c == 91 is
+        let me: int = jnode(j, 1, "", key)
+        j.pos += 1
+        jws(j)
+        if j.pos < n && j.bs[j.pos] == 93 is
+            j.pos += 1
+            return me
+        end
+        while j.pos < n && string_len(j.err) == 0 is
+            let ch: int = jval(j, "")
+            jlink(j, me, ch)
+            jws(j)
+            if j.pos < n && j.bs[j.pos] == 44 is
+                j.pos += 1
+            else is
+                break
+            end
+        end
+        jws(j)
+        if j.pos < n && j.bs[j.pos] == 93 is j.pos += 1 else is j.err = "oczekiwano ']'" end
+        return me
+    end
+    if c == 34 is
+        let s: string = jstr(j)
+        return jnode(j, 2, s, key)
+    end
+    let st: int = j.pos
+    while j.pos < n && j.bs[j.pos] != 44 && j.bs[j.pos] != 125 && j.bs[j.pos] != 93 && j.bs[j.pos] != 32 && j.bs[j.pos] != 10 && j.bs[j.pos] != 13 is j.pos += 1 end
+    return jnode(j, 3, string_slice(j.src, st, j.pos), key)
+end
+
+fn jget(j: J, obj: int, k: string) -> int is
+    if obj < 0 || j.t[obj] != 0 is return 0 - 1 end
+    let mut c: int = j.first[obj]
+    while c >= 0 is
+        if j.key[c] == k is return c end
+        c = j.next[c]
+    end
+    return 0 - 1
+end
+
+fn jstr_of(j: J, obj: int, k: string) -> string is
+    let c: int = jget(j, obj, k)
+    if c < 0 is return "" end
+    return j.s[c]
+end
+
+;; ── archive handling ────────────────────────────────────────────────────────────────────
+pub fn find_hlib(dir: string, name: string) -> string is
+    let home: string = hlpp_sys::home()
+    let roots: [string] = [dir, dir + "/hlibs", "hlibs", home + "/.hackeros/HackerLang/hlibs", "/usr/lib/HackerOS/hlibs", "/usr/lib/HackerOS/HackerLang/hlibs"]
+    let mut i: int = 0
+    while i < array_len(roots) is
+        let c1: string = roots[i] + "/" + name + ".hlib"
+        if hlpp_sys::is_file(c1) is return c1 end
+        i += 1
+    end
+    return ""
+end
+
+fn cache_dir(path: string) -> string is
+    return hlpp_sys::temp_dir() + hlpp_sys::path_sep() + "hlpp-hlib-" + to_string(hlpp_sys::file_size(path)) + "-" + hlpp_text::basename(path)
+end
+
+;; unpack (idempotent) and return the extraction directory, or "" with vm.err set
+fn unpack(vm: hlpp_vm::VM, path: string) -> string is
+    let d: string = cache_dir(path)
+    if hlpp_sys::is_file(d + "/manifest.json") is return d end
+    hlpp_sys::mkdir_p(d)
+    let sh: string = hlpp_sys::shell_program()
+    let q: string = hlpp_sys::quote(d)
+    let a: string = hlpp_sys::quote(path)
+    let mut r: hlpp_sys::Res = hlpp_sys::run_shell("tar --zstd -xf " + a + " -C " + q, sh, true)
+    if r.code != 0 is
+        r = hlpp_sys::run_shell("zstd -dc " + a + " | tar -xf - -C " + q, sh, true)
+    end
+    if r.code != 0 || !hlpp_sys::is_file(d + "/manifest.json") is
+        hlpp_vm::fail(vm, "Nie można rozpakować " + path + " — wymagane narzędzie `zstd` (H# nie ma dekodera zstd, zob. docs/HLIB_FINDINGS.md W-02)")
+        return ""
+    end
+    return d
+end
+
+fn verify_sums(vm: hlpp_vm::VM, d: string) -> bool is
+    let f: string = d + "/CHECKSUMS.sha256"
+    if !hlpp_sys::is_file(f) is
+        hlpp_vm::fail(vm, "Archiwum .hlib bez CHECKSUMS.sha256 — odrzucone")
+        return false
+    end
+    let sh: string = hlpp_sys::shell_program()
+    let mut r: hlpp_sys::Res = hlpp_sys::run_shell("cd " + hlpp_sys::quote(d) + " && sha256sum -c CHECKSUMS.sha256", sh, true)
+    if r.code != 0 is
+        r = hlpp_sys::run_shell("cd " + hlpp_sys::quote(d) + " && shasum -a 256 -c CHECKSUMS.sha256", sh, true)
+    end
+    if r.code != 0 is
+        hlpp_vm::fail(vm, "Suma SHA-256 artefaktu .hlib nie zgadza się (archiwum uszkodzone lub zmodyfikowane):\n" + r.out)
+        return false
+    end
+    return true
+end
+
+;; ── AST (hl_parser::Node as JSON) -> Hacker Lang source ───────────────────────────────────
+struct Cx is
+    j: J
+    err: string
+end
+
+fn parts_text(j: J, arr: int) -> string is
+    let mut out: string = ""
+    if arr < 0 || j.t[arr] != 1 is return out end
+    let mut c: int = j.first[arr]
+    while c >= 0 is
+        let k: int = j.first[c]
+        if k >= 0 is
+            let kind: string = j.key[k]
+            if kind == "Literal" is
+                out = out + j.s[k]
+            else if kind == "Var" is
+                out = out + "@" + j.s[k]
+            else if kind == "DynVar" is
+                out = out + "@{" + parts_text(j, k) + "}"
+            end
+        end
+        c = j.next[c]
+    end
+    return out
+end
+
+fn mode_prefix(m: string) -> string is
+    if m == "Sudo" is return "^> " end
+    if m == "Isolated" is return "-> " end
+    if m == "IsolatedSudo" is return "^-> " end
+    if m == "WithVars" is return ">> " end
+    if m == "WithVarsSudo" is return "^>> " end
+    if m == "WithVarsIsolated" is return "->> " end
+    return "> "
+end
+
+fn value_text(j: J, v: int) -> string is
+    let k: int = j.first[v]
+    if k < 0 is return "" end
+    let kind: string = j.key[k]
+    if kind == "Interpolated" is return parts_text(j, k) end
+    if kind == "Arithmetic" is return "$( " + j.s[k] + " )" end
+    if kind == "CmdOutput" is return "$(" + j.s[k] + ")" end
+    return j.s[k]
+end
+
+fn nodes_text(cx: Cx, arr: int, ind: string) -> string is
+    let j: J = cx.j
+    let mut out: string = ""
+    if arr < 0 is return out end
+    let mut c: int = j.first[arr]
+    while c >= 0 is
+        out = out + node_text(cx, c, ind)
+        c = j.next[c]
+    end
+    return out
+end
+
+fn node_text(cx: Cx, n: int, ind: string) -> string is
+    let j: J = cx.j
+    let v: int = j.first[n]
+    if v < 0 is return "" end
+    let kind: string = j.key[v]
+    let b: int = v
+    let inner: string = ind + "    "
+    if kind == "Print" is return ind + "~> " + parts_text(j, jget(j, b, "parts")) + "\n" end
+    if kind == "QuickCall" is return ind + ":: " + jstr_of(j, b, "name") + " " + parts_text(j, jget(j, b, "args")) + "\n" end
+    if kind == "QuickPipeToVar" is return ind + ":: " + jstr_of(j, b, "name") + " " + parts_text(j, jget(j, b, "args")) + " |> @" + jstr_of(j, b, "var_name") + "\n" end
+    if kind == "Command" is return ind + mode_prefix(jstr_of(j, b, "mode")) + jstr_of(j, b, "raw") + "\n" end
+    if kind == "BuiltinCmd" is return ind + "/> " + jstr_of(j, b, "raw") + "\n" end
+    if kind == "BuiltinPipeToVar" is return ind + "/> " + jstr_of(j, b, "raw") + " |> @" + jstr_of(j, b, "var_name") + "\n" end
+    if kind == "HshCommand" is return ind + "*> " + jstr_of(j, b, "raw") + "\n" end
+    if kind == "Background" is return ind + "& " + jstr_of(j, b, "raw") + "\n" end
+    if kind == "PipeToVar" is return ind + mode_prefix(jstr_of(j, b, "mode")) + jstr_of(j, b, "command") + " |> @" + jstr_of(j, b, "var_name") + "\n" end
+    if kind == "Arithmetic" is
+        let a: string = jstr_of(j, b, "assign_to")
+        let ai: int = jget(j, b, "assign_to")
+        if ai >= 0 && j.t[ai] == 2 is return ind + "$( " + jstr_of(j, b, "expr") + " ) -> @" + a + "\n" end
+        return ind + "$( " + jstr_of(j, b, "expr") + " )\n"
+    end
+    if kind == "VarDecl" is
+        let typ: string = jstr_of(j, b, "typ")
+        let mut ts: string = ""
+        if typ == "Int" is ts = ": int" end
+        if typ == "Float" is ts = ": float" end
+        if typ == "Bool" is ts = ": bool" end
+        if typ == "Str" || typ == "String" is ts = ": str" end
+        let vv: int = jget(j, b, "value")
+        let vk: int = j.first[vv]
+        if vk >= 0 && (j.key[vk] == "List" || j.key[vk] == "Map") is
+            cx.err = "VarDecl z listą/mapą w .hlib nie jest wspierany (zob. W-05)"
+            return ""
+        end
+        return ind + "% " + jstr_of(j, b, "name") + ts + " = " + value_text(j, vv) + "\n"
+    end
+    if kind == "Dependency" is return ind + "// " + jstr_of(j, b, "name") + "\n" end
+    if kind == "Import" is
+        let d: string = jstr_of(j, b, "detail")
+        if string_len(d) > 0 is return ind + "# <" + jstr_of(j, b, "lib") + "|" + d + ">\n" end
+        return ind + "# <" + jstr_of(j, b, "lib") + ">\n"
+    end
+    if kind == "FileImport" is return ind + "<< " + jstr_of(j, b, "path") + "\n" end
+    if kind == "DirImport" is return ind + "<* " + jstr_of(j, b, "path") + "\n" end
+    if kind == "FuncDef" is return ind + ": " + jstr_of(j, b, "name") + " def\n" + nodes_text(cx, jget(j, b, "body"), inner) + ind + "done\n" end
+    if kind == "FuncCall" is return ind + "-- " + jstr_of(j, b, "name") + "\n" end
+    if kind == "ArenaFuncDef" is return ind + ":: " + jstr_of(j, b, "name") + " <" + jstr_of(j, b, "arena_size") + "> def\n" + nodes_text(cx, jget(j, b, "body"), inner) + ind + "done\n" end
+    if kind == "ArenaFuncCall" is return ind + ":: " + jstr_of(j, b, "name") + " " + parts_text(j, jget(j, b, "args")) + "\n" end
+    if kind == "Conditional" is
+        let c: string = jstr_of(j, b, "condition")
+        let mut w: string = "ok"
+        if c == "Err" is w = "err" end
+        return ind + "? " + w + "\n" + nodes_text(cx, jget(j, b, "body"), inner) + ind + "done\n"
+    end
+    if kind == "ForIn" is return ind + "@ " + jstr_of(j, b, "var") + " in " + parts_text(j, jget(j, b, "iterable")) + "\n" + nodes_text(cx, jget(j, b, "body"), inner) + ind + "done\n" end
+    if kind == "WhileLoop" is return ind + "?~ " + parts_text(j, jget(j, b, "condition")) + "\n" + nodes_text(cx, jget(j, b, "body"), inner) + ind + "done\n" end
+    if kind == "Export" is
+        let vi: int = jget(j, b, "value")
+        let ek: int = j.first[vi]
+        if ek >= 0 && j.key[ek] == "Single" is return ind + "=> " + jstr_of(j, b, "name") + " " + parts_text(j, ek) + "\n" end
+        let mut out: string = ind + "=> " + jstr_of(j, b, "name") + " [\n"
+        let mut it: int = j.first[ek]
+        while it >= 0 is
+            out = out + ind + "    " + parts_text(j, it) + "\n"
+            it = j.next[it]
+        end
+        return out + ind + "]\n"
+    end
+    if kind == "LineComment" || kind == "DocComment" || kind == "BlockComment" is return "" end
+    if kind == "Block" is return nodes_text(cx, b, ind) end
+    if kind == "VarRef" is return "" end
+    cx.err = "Wariant AST '" + kind + "' z archiwum .hlib nie jest wspierany przez Hacker Lang++ (zob. docs/HLIB_FINDINGS.md W-05)"
+    return ""
+end
+
+;; Returns Hacker Lang source for the archive, or "" (vm.err set) on failure.
+pub fn hl_source(vm: hlpp_vm::VM, path: string, name: string) -> string is
+    let d: string = unpack(vm, path)
+    if string_len(d) == 0 is return "" end
+    if !verify_sums(vm, d) is return "" end
+    let mj: J = jnew(fs::read(d + "/manifest.json"))
+    jval(mj, "")
+    if string_len(mj.err) > 0 is
+        hlpp_vm::fail(vm, "manifest.json: " + mj.err)
+        return ""
+    end
+    let lang: string = jstr_of(mj, 0, "language")
+    let arts: int = jget(mj, 0, "artifacts")
+    let mut ast: string = ""
+    let mut src: string = ""
+    if arts >= 0 is
+        let mut a: int = mj.first[arts]
+        while a >= 0 is
+            let p: string = jstr_of(mj, a, "path")
+            if jstr_of(mj, a, "kind") == "ast" is
+                if hlpp_text::ends(p, ".ast.json") is ast = p end
+                if hlpp_text::ends(p, ".hl") is src = p end
+            end
+            a = mj.next[a]
+        end
+    end
+    if string_len(src) > 0 is return fs::read(d + "/" + src) end
+    if string_len(ast) == 0 is
+        hlpp_vm::fail(vm, "Archiwum .hlib '" + name + "' nie ma artefaktu ast (jedynie .so — niewspierane w Hacker Lang++, W-04)")
+        return ""
+    end
+    if lang != "hackerlang" is
+        hlpp_vm::fail(vm, "Archiwum .hlib '" + name + "' zbudowano w języku '" + lang + "' — AST tylko tego samego języka (HLIB_FORMAT.md §5)")
+        return ""
+    end
+    let aj: J = jnew(fs::read(d + "/" + ast))
+    jval(aj, "")
+    if string_len(aj.err) > 0 is
+        hlpp_vm::fail(vm, ast + ": " + aj.err)
+        return ""
+    end
+    let cx: Cx = Cx { j: aj, err: "" }
+    let out: string = nodes_text(cx, 0, "")
+    if string_len(cx.err) > 0 is
+        hlpp_vm::fail(vm, cx.err)
+        return ""
+    end
+    return out
+end

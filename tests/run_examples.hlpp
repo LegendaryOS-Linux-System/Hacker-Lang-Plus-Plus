@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# smoke tests for Hacker Lang++ only features. usage: tests/run_examples.sh <hlpp-binary>
+H=$(realpath "$1"); cd "$(dirname "$0")/../examples"; ok=0; bad=0
+check(){ out=$("$H" "$1" 2>&1); if [ "$out" == "$2" ]; then ok=$((ok+1)); else bad=$((bad+1)); echo "FAIL $1: $out"; fi; }
+check oop_basic.hlpp $'Rex says woof\nRex fetches'
+check loops_and_math.hlpp $'sum=9999900000\nhello from a function'
+echo "ok=$ok bad=$bad"; [ $bad == 0 ]

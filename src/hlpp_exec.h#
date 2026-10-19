@@ -1,0 +1,882 @@
+mod hlpp_text
+mod hlpp_num
+mod hlpp_map
+mod hlpp_ops
+mod hlpp_prog
+mod hlpp_sys
+mod hlpp_vm
+mod hlpp_rt
+mod hlpp_oop
+mod hlpp_cu
+mod hlpp_load
+
+fn setx(vm: hlpp_vm::VM, code: int) is
+    vm.last_exit = code
+end
+
+fn lit_str(vm: hlpp_vm::VM, i: int) -> string is
+    return vm.p.lits[i]
+end
+
+fn opnd(vm: hlpp_vm::VM, x: int) -> string is
+    if x >= 0 is return hlpp_vm::get_var(vm, x) end
+    let li: int = 0 - x - 1
+    return vm.p.lits[li]
+end
+
+;; 1 when operand x holds a canonical integer (value in `ival`), else 0
+fn int_kind(vm: hlpp_vm::VM, x: int) -> int is
+    if x >= 0 is
+        let k: int = vm.nk[x]
+        if vm.vt[x] == 0 is return 0 end
+        if k == 1 || k == 2 is return 1 end
+        if k == 4 is return 0 end
+        let s: string = vm.vals[x]
+        let ip: hlpp_text::IntParse = hlpp_text::parse_i(s)
+        if ip.ok is
+            let v: int = ip.v
+            let canon: string = to_string(v)
+            if canon == s is
+                vm.ni[x] = v
+                vm.nk[x] = 1
+                return 1
+            end
+        end
+        vm.nk[x] = 4
+        return 0
+    end
+    let li: int = 0 - x - 1
+    let k2: int = vm.lit_k[li]
+    if k2 == 1 is return 1 end
+    if k2 == 2 is return 0 end
+    let s2: string = vm.p.lits[li]
+    let ip2: hlpp_text::IntParse = hlpp_text::parse_i(s2)
+    if ip2.ok is
+        let v2: int = ip2.v
+        let canon2: string = to_string(v2)
+        if canon2 == s2 is
+            vm.lit_i[li] = v2
+            vm.lit_k[li] = 1
+            return 1
+        end
+    end
+    vm.lit_k[li] = 2
+    return 0
+end
+
+fn int_val(vm: hlpp_vm::VM, x: int) -> int is
+    if x >= 0 is return vm.ni[x] end
+    let li: int = 0 - x - 1
+    return vm.lit_i[li]
+end
+
+fn op_cmpv(vm: hlpp_vm::VM, op: int, x: int, y: int) is
+    if int_kind(vm, x) == 1 && int_kind(vm, y) == 1 is
+        let l: int = int_val(vm, x)
+        let r: int = int_val(vm, y)
+        if op == 0 is vm.flag = l == r
+        else if op == 1 is vm.flag = l != r
+        else if op == 2 is vm.flag = l >= r
+        else if op == 3 is vm.flag = l <= r
+        else if op == 4 is vm.flag = l > r
+        else is vm.flag = l < r end
+        return
+    end
+    vm.flag = hlpp_rt::cmp_values(op, opnd(vm, x), opnd(vm, y))
+end
+
+fn arena_bytes(sz: string) -> int is
+    let t: string = hlpp_text::low(string_trim(sz))
+    if string_len(t) == 0 is return 4096 end
+    let mut mult: int = 1
+    let mut digits: string = t
+    if string_ends_with(t, "k") || string_ends_with(t, "kb") is
+        mult = 1024
+    else if string_ends_with(t, "m") || string_ends_with(t, "mb") is
+        mult = 1048576
+    else if string_ends_with(t, "g") || string_ends_with(t, "gb") is
+        mult = 1073741824
+    end
+    if mult > 1 is
+        let mut e: int = string_len(t)
+        while e > 0 && !hlpp_text::is_digit_b(string_to_bytes(t)[e - 1]) is e -= 1 end
+        digits = string_slice(t, 0, e)
+    end
+    let n: int = hlpp_text::int_or(digits, 4096)
+    return n * mult
+end
+
+fn enter_function(vm: hlpp_vm::VM, at: int, kind: int) is
+    if vm.rsp >= vm.depth_limit is
+        hlpp_vm::fail(vm, "Przekroczono limit zagnieżdżenia wywołań (" + to_string(vm.depth_limit) + ")")
+        return
+    end
+    hlpp_vm::frame_push(vm, vm.pc, kind, "", vm.obj_created)
+    vm.pc = at
+end
+
+fn bind_params(vm: hlpp_vm::VM, params: string, args: string) is
+    let names: [string] = hlpp_text::words(string_replace_all(params, ",", " "))
+    if array_len(names) == 0 is return end
+    let vals: [string] = hlpp_text::shell_words(args)
+    let mut i: int = 0
+    while i < array_len(names) is
+        let mut v: string = ""
+        if i < array_len(vals) is v = vals[i] end
+        hlpp_vm::set_dyn(vm, names[i], v, 1)
+        i += 1
+    end
+end
+
+;; call method `m` on object id with args; ret pc = vm.pc
+fn enter_method(vm: hlpp_vm::VM, id: int, at: int, params: string, args: string) is
+    if vm.rsp >= vm.depth_limit is
+        hlpp_vm::fail(vm, "Przekroczono limit zagnieżdżenia wywołań (" + to_string(vm.depth_limit) + ")")
+        return
+    end
+    let ss: int = hlpp_vm::special(vm, 0, "self")
+    let old: string = ""
+    if vm.vt[ss] != 0 is
+        let o2: string = hlpp_vm::get_var(vm, ss)
+        hlpp_vm::frame_push(vm, vm.pc, 2, o2, vm.obj_created)
+    else is
+        hlpp_vm::frame_push(vm, vm.pc, 2, "", vm.obj_created)
+    end
+    hlpp_vm::set_var(vm, ss, hlpp_vm::obj_str(id), 1)
+    hlpp_vm::set_var(vm, hlpp_vm::special(vm, 1, "_ret"), "", 1)
+    hlpp_vm::set_var(vm, hlpp_vm::special(vm, 2, "_args"), args, 1)
+    bind_params(vm, params, args)
+    vm.pc = at
+end
+
+fn obj_of_var(vm: hlpp_vm::VM, slot: int) -> int is
+    let s: string = hlpp_vm::get_var(vm, slot)
+    let id: int = hlpp_vm::obj_id(s)
+    if id < 0 || !hlpp_oop::is_obj(vm, id) is
+        hlpp_vm::fail(vm, "'" + vm.p.names[slot] + "' nie jest obiektem (wartość: '" + s + "') — użyj `+> Klasa zmienna` do utworzenia instancji")
+        return 0 - 1
+    end
+    return id
+end
+
+fn op_new(vm: hlpp_vm::VM, cname: string, slot: int, args: string) is
+    let cid: int = hlpp_oop::find_class(vm, cname)
+    if cid < 0 is
+        hlpp_vm::fail(vm, "Nieznana klasa '" + cname + "' — zdefiniuj ją przez `:+ " + cname + " def ... done`")
+        return
+    end
+    let id: int = hlpp_oop::new_object(vm, cid)
+    hlpp_vm::set_var(vm, slot, hlpp_vm::obj_str(id), 1)
+    let at: int = hlpp_oop::find_method(vm, cid, "init")
+    if at >= 0 is
+        enter_method(vm, id, at, hlpp_oop::method_params(vm, cid, "init"), args)
+    end
+end
+
+fn op_mcall(vm: hlpp_vm::VM, pc: int, slot: int, mname: string, args: string) is
+    let id: int = obj_of_var(vm, slot)
+    if id < 0 is return end
+    let cid: int = vm.obj_cls[id]
+    let mut at: int = 0 - 1
+    if vm.ic_cls[pc] == cid is
+        at = vm.ic_pc[pc]
+    else is
+        at = hlpp_oop::find_method(vm, cid, mname)
+        if at >= 0 is
+            vm.ic_cls[pc] = cid
+            vm.ic_pc[pc] = at
+        end
+    end
+    if at < 0 is
+        hlpp_vm::fail(vm, "Klasa '" + vm.cls_name[cid] + "' nie ma metody '" + mname + "'")
+        return
+    end
+    enter_method(vm, id, at, hlpp_oop::method_params(vm, cid, mname), args)
+end
+
+fn op_ret(vm: hlpp_vm::VM) is
+    if vm.rsp <= 0 is
+        vm.running = false
+        return
+    end
+    vm.rsp -= 1
+    let r: int = vm.rsp
+    let kind: int = vm.rkind[r]
+    vm.pc = vm.rpc[r]
+    if kind == 4 is
+        hlpp_sys::chdir_to(vm.rself[r])
+        vm.rself[r] = ""
+    else if kind == 2 is
+        let ss: int = hlpp_vm::special(vm, 0, "self")
+        let old: string = vm.rself[r]
+        if string_len(old) > 0 is
+            hlpp_vm::set_var(vm, ss, old, 1)
+        else is
+            hlpp_vm::unset_var(vm, ss)
+        end
+        vm.rself[r] = ""
+        hlpp_oop::release_region(vm, vm.robj[r])
+    else if kind == 1 is
+        ;; hl copies the parent env into the arena and merges back everything EXCEPT `_arena_*`
+        let nn: int = array_len(vm.p.names)
+        if vm.arena_scan != nn is
+            vm.arena_slots = []
+            let mut q: int = 0
+            while q < nn is
+                if string_starts_with(vm.p.names[q], "_arena_") is vm.arena_slots = array_push(vm.arena_slots, q) end
+                q += 1
+            end
+            vm.arena_scan = nn
+        end
+        let mut z: int = 0
+        while z < array_len(vm.arena_slots) is
+            hlpp_vm::unset_var(vm, vm.arena_slots[z])
+            z += 1
+        end
+        hlpp_oop::release_region(vm, vm.robj[r])
+    end
+end
+
+fn op_callarena(vm: hlpp_vm::VM, name: string, args: string) is
+    let key: string = "::" + name
+    let at: int = hlpp_map::get(vm.fns, key, 0 - 1)
+    if at < 0 is
+        hlpp_vm::fail(vm, "Niezdefiniowana arena function: '::" + name + "'")
+        return
+    end
+    hlpp_vm::set_var(vm, hlpp_vm::special(vm, 3, "_arena_args"), args, 1)
+    hlpp_vm::set_var(vm, hlpp_vm::special(vm, 4, "_arena_name"), name, 1)
+    let sz: int = hlpp_map::get(vm.arena_sz, key, 4096)
+    hlpp_vm::set_int(vm, hlpp_vm::special(vm, 5, "_arena_size"), sz)
+    enter_function(vm, at, 1)
+end
+
+fn op_quick(vm: hlpp_vm::VM, name: string, args: string, capture: bool, slot: int) is
+    if hlpp_map::has(vm.fns, "::" + name) is
+        op_callarena(vm, name, args)
+        return
+    end
+    let q: hlpp_rt::QR = hlpp_rt::quick_eval(vm, name, args)
+    if !q.known is
+        hlpp_vm::fail(vm, "Nieznana quick-funkcja '::" + name + "'. Zdefiniuj ją jako arena function: :: " + name + " <4k> def ... done")
+        return
+    end
+    if !vm.running is return end
+    if capture is
+        let mut t: string = q.out
+        while string_ends_with(t, "\n") || string_ends_with(t, "\r") is t = string_slice(t, 0, string_len(t) - 1) end
+        hlpp_vm::set_var(vm, slot, t, 1)
+        setx(vm, 0)
+        return
+    end
+    if q.raw is
+        hlpp_sys::out(q.out)
+    else is
+        hlpp_sys::outln(q.out)
+    end
+    setx(vm, q.code)
+end
+
+fn snapshot(vm: hlpp_vm::VM) is
+    ;; NOTE: no array_pop on string arrays — H# frees the popped element while other owners still
+    ;; point at it (docs/HSHARP_CODEGEN_BUGS.md B13); the snapshot pool is reused instead.
+    let n: int = array_len(vm.vals)
+    let mut off: int = 0
+    if vm.snapsp > 0 is off = vm.snap_off[vm.snapsp - 1] + vm.snap_n[vm.snapsp - 1] end
+    let mut i: int = 0
+    while i < n is
+        let v: string = hlpp_vm::get_var(vm, i)
+        if off + i < array_len(vm.snap_v) is
+            vm.snap_v[off + i] = v
+            vm.snap_t[off + i] = vm.vt[i]
+        else is
+            vm.snap_v = array_push(vm.snap_v, v)
+            vm.snap_t = array_push(vm.snap_t, vm.vt[i])
+        end
+        i += 1
+    end
+    if vm.snapsp >= array_len(vm.snap_off) is
+        vm.snap_off = array_push(vm.snap_off, off)
+        vm.snap_n = array_push(vm.snap_n, n)
+    else is
+        vm.snap_off[vm.snapsp] = off
+        vm.snap_n[vm.snapsp] = n
+    end
+    vm.snapsp += 1
+end
+
+fn is_chan(vm: hlpp_vm::VM, s: int) -> bool is
+    return string_starts_with(vm.p.names[s], "__chan_")
+end
+
+fn restore(vm: hlpp_vm::VM) is
+    if vm.snapsp <= 0 is return end
+    vm.snapsp -= 1
+    let off: int = vm.snap_off[vm.snapsp]
+    let n: int = vm.snap_n[vm.snapsp]
+    let mut i: int = 0
+    while i < n is
+        if !is_chan(vm, i) is
+            vm.vals[i] = vm.snap_v[off + i]
+            vm.vt[i] = vm.snap_t[off + i]
+            vm.nk[i] = 0
+        end
+        i += 1
+    end
+end
+
+fn word_frame_push(vm: hlpp_vm::VM, s: string) is
+    let ws: [string] = hlpp_text::words(s)
+    let start: int = vm.it_len
+    let mut i: int = 0
+    while i < array_len(ws) is
+        if vm.it_len < array_len(vm.it_pool) is
+            vm.it_pool[vm.it_len] = ws[i]
+        else is
+            vm.it_pool = array_push(vm.it_pool, ws[i])
+        end
+        vm.it_len += 1
+        i += 1
+    end
+    while array_len(vm.itf_pos) <= vm.itsp is
+        vm.itf_pos = array_push(vm.itf_pos, 0)
+        vm.itf_end = array_push(vm.itf_end, 0)
+        vm.itf_start = array_push(vm.itf_start, 0)
+    end
+    vm.itf_pos[vm.itsp] = start
+    vm.itf_end[vm.itsp] = vm.it_len
+    vm.itf_start[vm.itsp] = start
+    vm.itsp += 1
+end
+
+fn push_counter(vm: hlpp_vm::VM, which: int, v: int) is
+    ;; which 0 = while counters, 1 = repeat counters
+    if which == 0 is
+        if vm.wsp < array_len(vm.wcnt) is vm.wcnt[vm.wsp] = v else is vm.wcnt = array_push(vm.wcnt, v) end
+        vm.wsp += 1
+    else is
+        if vm.rcsp < array_len(vm.rcnt) is vm.rcnt[vm.rcsp] = v else is vm.rcnt = array_push(vm.rcnt, v) end
+        vm.rcsp += 1
+    end
+end
+
+fn push_switch(vm: hlpp_vm::VM, s: string) is
+    if vm.swsp < array_len(vm.sws) is vm.sws[vm.swsp] = s else is vm.sws = array_push(vm.sws, s) end
+    vm.swsp += 1
+end
+
+fn op_nbin(vm: hlpp_vm::VM, code: int) is
+    if vm.nsp < 2 is
+        vm.nfail = true
+        return
+    end
+    if vm.ns[vm.nsp - 1] == 0 && vm.ns[vm.nsp - 2] == 0 && code <= 2 is
+        ;; allocation-free integer fast path (operands kept far from i64 overflow)
+        let x: int = vm.nm[vm.nsp - 2]
+        let y: int = vm.nm[vm.nsp - 1]
+        let lim_add: int = 1000000000000000000
+        let lim_mul: int = 3000000000
+        let nlim_add: int = 0 - lim_add
+        let nlim_mul: int = 0 - lim_mul
+        if code < 2 && x < lim_add && x > nlim_add && y < lim_add && y > nlim_add is
+            vm.nsp -= 1
+            if code == 0 is vm.nm[vm.nsp - 1] = x + y else is vm.nm[vm.nsp - 1] = x - y end
+            return
+        end
+        if code == 2 && x < lim_mul && x > nlim_mul && y < lim_mul && y > nlim_mul is
+            vm.nsp -= 1
+            vm.nm[vm.nsp - 1] = x * y
+            return
+        end
+    end
+    vm.nsp -= 1
+    let b: hlpp_num::Num = hlpp_num::Num { m: vm.nm[vm.nsp], s: vm.ns[vm.nsp], ok: true }
+    let a: hlpp_num::Num = hlpp_num::Num { m: vm.nm[vm.nsp - 1], s: vm.ns[vm.nsp - 1], ok: true }
+    let mut r: hlpp_num::Num = hlpp_num::bad()
+    if code == 0 is r = hlpp_num::add(a, b)
+    else if code == 1 is r = hlpp_num::sub(a, b)
+    else if code == 2 is r = hlpp_num::mul(a, b)
+    else if code == 3 is r = hlpp_num::div(a, b)
+    else is r = hlpp_num::rem(a, b) end
+    if !r.ok is vm.nfail = true end
+    vm.nm[vm.nsp - 1] = r.m
+    vm.ns[vm.nsp - 1] = r.s
+end
+
+fn ntop(vm: hlpp_vm::VM) -> hlpp_num::Num is
+    if vm.nsp < 1 is return hlpp_num::of_int(0) end
+    return hlpp_num::Num { m: vm.nm[vm.nsp - 1], s: vm.ns[vm.nsp - 1], ok: true }
+end
+
+;; produce the textual result of the numeric program (or the shell fallback)
+fn nresult(vm: hlpp_vm::VM, src: int) -> string is
+    if vm.nfail is
+        let ex: string = hlpp_rt::interp(vm, vm.p.lits[src])
+        return hlpp_rt::arith_shell(vm, ex)
+    end
+    return hlpp_num::fmt(ntop(vm))
+end
+
+fn op_nend(vm: hlpp_vm::VM, slot: int, src: int) is
+    if !vm.nfail && slot >= 0 && vm.ns[vm.nsp - 1] == 0 && vm.nsp > 0 is
+        hlpp_vm::set_int(vm, slot, vm.nm[vm.nsp - 1])
+        setx(vm, 0)
+        return
+    end
+    let r: string = nresult(vm, src)
+    if slot < 0 is
+        hlpp_sys::outln(r)
+    else is
+        hlpp_vm::set_var(vm, slot, r, 1)
+    end
+    setx(vm, 0)
+end
+
+fn op_nvar(vm: hlpp_vm::VM, slot: int) is
+    if vm.vt[slot] != 0 && (vm.nk[slot] == 1 || vm.nk[slot] == 2) is
+        hlpp_vm::npush(vm, vm.ni[slot], 0)
+        return
+    end
+    let n: hlpp_num::Num = hlpp_vm::num_of(vm, slot)
+    if !n.ok is
+        vm.nfail = true
+        hlpp_vm::npush(vm, 0, 0)
+        return
+    end
+    hlpp_vm::npush(vm, n.m, n.s)
+end
+
+fn op_export(vm: hlpp_vm::VM, slot: int, v: string) is
+    hlpp_vm::set_var(vm, slot, v, 1)
+    hlpp_sys::setenv(vm.p.names[slot], v)
+    setx(vm, 0)
+end
+
+fn trim_nl(s: string) -> string is
+    let mut t: string = s
+    while string_ends_with(t, "\n") || string_ends_with(t, "\r") is t = string_slice(t, 0, string_len(t) - 1) end
+    return t
+end
+
+fn op_exec(vm: hlpp_vm::VM, cmd: string, mode: int, check_echo: int) is
+    let t: string = string_trim(cmd)
+    if check_echo == 1 && (t == "echo" || string_starts_with(t, "echo ")) is
+        hlpp_vm::fail(vm, "'echo' jest zabroniony. Użyj '~>'.")
+        return
+    end
+    let r: hlpp_sys::Res = hlpp_rt::run_command(vm, cmd, mode, false)
+    if vm.running is setx(vm, r.code) end
+end
+
+fn op_execcap(vm: hlpp_vm::VM, cmd: string, mode: int, slot: int) is
+    let r: hlpp_sys::Res = hlpp_rt::run_command(vm, cmd, mode, true)
+    if !vm.running is return end
+    hlpp_vm::set_var(vm, slot, string_trim(r.out), 1)
+    setx(vm, r.code)
+end
+
+fn op_builtin(vm: hlpp_vm::VM, line: string, capture: bool, slot: int) is
+    let r: hlpp_cu::CU = hlpp_cu::run(vm, line)
+    if !vm.running is return end
+    if string_len(r.err) > 0 is
+        hlpp_sys::err("\u{1b}[31m[/>]\u{1b}[0m " + r.err + "\n")
+        setx(vm, 1)
+        return
+    end
+    if capture is
+        hlpp_vm::set_var(vm, slot, trim_nl(r.cap), 1)
+    end
+    setx(vm, r.code)
+end
+
+;; ── the dispatch loop ───────────────────────────────────────────────────────
+pub fn run(vm: hlpp_vm::VM) is
+    ;; GENERATED prelude (tools/gen_ops.py)
+    let o_halt: int = 0
+    let o_lit: int = 1
+    let o_var: int = 2
+    let o_dyn: int = 3
+    let o_cat: int = 4
+    let o_print: int = 5
+    let o_printlit: int = 6
+    let o_set: int = 7
+    let o_setlit: int = 8
+    let o_jmp: int = 9
+    let o_jifok: int = 10
+    let o_jiferr: int = 11
+    let o_jtrue: int = 12
+    let o_jfalse: int = 13
+    let o_exec: int = 14
+    let o_execcap: int = 15
+    let o_quick: int = 16
+    let o_quickcap: int = 17
+    let o_builtin: int = 18
+    let o_builtincap: int = 19
+    let o_nbeg: int = 20
+    let o_nlit: int = 21
+    let o_nvar: int = 22
+    let o_nbin: int = 23
+    let o_nneg: int = 24
+    let o_nend: int = 25
+    let o_nendf: int = 26
+    let o_nfld: int = 27
+    let o_call: int = 28
+    let o_ret: int = 29
+    let o_deffunc: int = 30
+    let o_defarena: int = 31
+    let o_callarena: int = 32
+    let o_forinit: int = 33
+    let o_fornext: int = 34
+    let o_forend: int = 35
+    let o_cond: int = 36
+    let o_cmpv: int = 37
+    let o_cmps: int = 38
+    let o_whinit: int = 39
+    let o_whtick: int = 40
+    let o_whend: int = 41
+    let o_swbeg: int = 42
+    let o_swcmp: int = 43
+    let o_swcmpi: int = 44
+    let o_swend: int = 45
+    let o_rptinit: int = 46
+    let o_rptnext: int = 47
+    let o_rptend: int = 48
+    let o_export: int = 49
+    let o_dep: int = 50
+    let o_import: int = 51
+    let o_fileimport: int = 52
+    let o_dirimport: int = 53
+    let o_gobeg: int = 54
+    let o_goend: int = 55
+    let o_chandecl: int = 56
+    let o_chanop: int = 57
+    let o_bg: int = 58
+    let o_hsh: int = 59
+    let o_hos: int = 60
+    let o_extern: int = 61
+    let o_externend: int = 62
+    let o_varprint: int = 63
+    let o_nop: int = 64
+    let o_dyn_set: int = 65
+    let o_classdef: int = 66
+    let o_defmeth: int = 67
+    let o_new: int = 68
+    let o_mcall: int = 69
+    let o_fget: int = 70
+    let o_fset: int = 71
+    let o_delete: int = 72
+    let o_mret: int = 73
+    let o_setret: int = 74
+    let o_ashell: int = 75
+    let o_fielddef: int = 76
+    let o_loopmark: int = 77
+    let o_exit: int = 78
+    let o_sleepnop: int = 79
+    let wlimit: int = 1000000
+    hlpp_vm::ensure_slots(vm)
+    hlpp_vm::ensure_code(vm)
+    hlpp_vm::ensure_lits(vm)
+    while vm.running is
+        let pc: int = vm.pc
+        let base: int = pc * 4
+        let op: int = vm.p.code[base]
+        let a: int = vm.p.code[base + 1]
+        let b: int = vm.p.code[base + 2]
+        let c: int = vm.p.code[base + 3]
+        vm.pc = pc + 1
+        vm.stats_ops += 1
+        if vm.trace is
+            let tsp: int = vm.sp
+            hlpp_sys::err("pc=" + to_string(pc) + " op=" + to_string(op) + " a=" + to_string(a) + " b=" + to_string(b) + " c=" + to_string(c) + " sp=" + to_string(tsp) + "\n")
+        end
+        if op == o_lit is
+            hlpp_vm::push(vm, vm.p.lits[a])
+        else if op == o_var is
+            hlpp_vm::push(vm, hlpp_vm::get_var(vm, a))
+        else if op == o_cat is
+            let mut r: string = ""
+            let mut i: int = vm.sp - a
+            if i < 0 is i = 0 end
+            while i < vm.sp is
+                r = r + vm.stk[i]
+                i += 1
+            end
+            vm.sp = vm.sp - a
+            if vm.sp < 0 is vm.sp = 0 end
+            hlpp_vm::push(vm, r)
+        else if op == o_setlit is
+            hlpp_vm::set_var(vm, a, vm.p.lits[b], c)
+            setx(vm, 0)
+        else if op == o_set is
+            hlpp_vm::set_var(vm, a, hlpp_vm::pop(vm), b)
+            setx(vm, 0)
+        else if op == o_jmp is
+            vm.pc = a
+        else if op == o_cmpv is
+            op_cmpv(vm, a, b, c)
+        else if op == o_jfalse is
+            if !vm.flag is vm.pc = a end
+        else if op == o_jtrue is
+            if vm.flag is vm.pc = a end
+        else if op == o_jifok is
+            if vm.last_exit == 0 is vm.pc = a end
+        else if op == o_jiferr is
+            if vm.last_exit != 0 is vm.pc = a end
+        else if op == o_print is
+            hlpp_sys::outln(hlpp_vm::pop(vm))
+            setx(vm, 0)
+        else if op == o_printlit is
+            hlpp_sys::outln(vm.p.lits[a])
+            setx(vm, 0)
+        else if op == o_nbeg is
+            vm.nsp = 0
+            vm.nfail = false
+        else if op == o_nlit is
+            let nli: int = 0 - a - 1
+            if int_kind(vm, nli) == 1 is
+                hlpp_vm::npush(vm, vm.lit_i[a], 0)
+            else is
+                let nn: hlpp_num::Num = hlpp_num::parse(vm.p.lits[a])
+                hlpp_vm::npush(vm, nn.m, nn.s)
+            end
+        else if op == o_nvar is
+            op_nvar(vm, a)
+        else if op == o_nbin is
+            op_nbin(vm, a)
+        else if op == o_nneg is
+            if vm.nsp > 0 is vm.nm[vm.nsp - 1] = 0 - vm.nm[vm.nsp - 1] end
+        else if op == o_nend is
+            op_nend(vm, a, b)
+        else if op == o_whtick is
+            if vm.wcnt[vm.wsp - 1] >= wlimit is
+                hlpp_vm::fail(vm, "Pętla while: przekroczono limit 1000000 iteracji")
+            else is
+                vm.wcnt[vm.wsp - 1] += 1
+            end
+        else if op == o_whinit is
+            push_counter(vm, 0, 0)
+        else if op == o_whend is
+            if vm.wsp > 0 is vm.wsp -= 1 end
+            setx(vm, 0)
+        else if op == o_fornext is
+            let f: int = vm.itsp - 1
+            if vm.itf_pos[f] >= vm.itf_end[f] is
+                vm.pc = b
+            else is
+                hlpp_vm::set_var(vm, a, vm.it_pool[vm.itf_pos[f]], 1)
+                vm.itf_pos[f] += 1
+            end
+        else if op == o_forinit is
+            word_frame_push(vm, hlpp_vm::pop(vm))
+            setx(vm, 0)
+        else if op == o_forend is
+            if vm.itsp > 0 is
+                vm.itsp -= 1
+                vm.it_len = vm.itf_start[vm.itsp]
+            end
+        else if op == o_call is
+            let nm: string = vm.p.lits[a]
+            let at: int = hlpp_map::get(vm.fns, nm, 0 - 1)
+            if at < 0 is
+                hlpp_vm::fail(vm, "Niezdefiniowana funkcja: '" + nm + "'")
+            else is
+                enter_function(vm, at, 0)
+            end
+        else if op == o_ret is
+            op_ret(vm)
+        else if op == o_deffunc is
+            hlpp_map::put(vm.fns, vm.p.lits[a], pc + 1)
+            vm.pc = b
+            setx(vm, 0)
+        else if op == o_defarena is
+            let key: string = "::" + vm.p.lits[a]
+            hlpp_map::put(vm.fns, key, pc + 1)
+            hlpp_map::put(vm.arena_sz, key, arena_bytes(vm.p.lits[c]))
+            vm.pc = b
+            setx(vm, 0)
+        else if op == o_callarena is
+            op_callarena(vm, vm.p.lits[a], hlpp_vm::pop(vm))
+        else if op == o_quick is
+            op_quick(vm, vm.p.lits[a], hlpp_vm::pop(vm), false, 0)
+        else if op == o_quickcap is
+            op_quick(vm, vm.p.lits[a], hlpp_vm::pop(vm), true, b)
+        else if op == o_exec is
+            op_exec(vm, hlpp_vm::pop(vm), a, b)
+        else if op == o_execcap is
+            op_execcap(vm, hlpp_vm::pop(vm), a, b)
+        else if op == o_builtin is
+            op_builtin(vm, hlpp_vm::pop(vm), false, 0)
+        else if op == o_builtincap is
+            op_builtin(vm, hlpp_vm::pop(vm), true, a)
+        else if op == o_dyn is
+            hlpp_vm::push(vm, hlpp_vm::get_dyn(vm, hlpp_vm::pop(vm)))
+        else if op == o_cond is
+            vm.flag = hlpp_rt::cond_string(vm, hlpp_vm::pop(vm))
+        else if op == o_cmps is
+            let r2: string = hlpp_vm::pop(vm)
+            let l2: string = hlpp_vm::pop(vm)
+            vm.flag = hlpp_rt::cmp_values(a, l2, r2)
+        else if op == o_swbeg is
+            push_switch(vm, hlpp_vm::pop(vm))
+        else if op == o_swcmp is
+            if vm.sws[vm.swsp - 1] == vm.p.lits[a] is vm.pc = b end
+        else if op == o_swcmpi is
+            let pat: string = vm.p.lits[a]
+            if vm.sws[vm.swsp - 1] == pat || vm.sws[vm.swsp - 1] == hlpp_rt::interp(vm, pat) is vm.pc = b end
+        else if op == o_swend is
+            if vm.swsp > 0 is vm.swsp -= 1 end
+            setx(vm, 0)
+        else if op == o_rptinit is
+            push_counter(vm, 1, a)
+            setx(vm, 0)
+        else if op == o_rptnext is
+            if vm.rcnt[vm.rcsp - 1] <= 0 is
+                vm.pc = a
+            else is
+                vm.rcnt[vm.rcsp - 1] -= 1
+            end
+        else if op == o_rptend is
+            if vm.rcsp > 0 is vm.rcsp -= 1 end
+        else if op == o_export is
+            op_export(vm, a, hlpp_vm::pop(vm))
+        else if op == o_dep is
+            let dc: int = hlpp_rt::dep_check(vm, vm.p.lits[a], vm.p.lits[b])
+            setx(vm, dc)
+        else if op == o_import is
+            hlpp_load::import_lib(vm, vm.p.lits[a], vm.p.lits[b])
+            setx(vm, 0)
+        else if op == o_fileimport is
+            hlpp_load::file_import(vm, hlpp_vm::pop(vm), vm.p.lits[a], b)
+        else if op == o_dirimport is
+            hlpp_load::dir_import(vm, hlpp_vm::pop(vm))
+        else if op == o_gobeg is
+            let gn: string = vm.p.lits[a]
+            let mut nm2: string = "<goroutine>"
+            if string_len(gn) > 0 is nm2 = gn end
+            hlpp_sys::err("\u{1b}[35m[hl :*]\u{1b}[0m goroutine '" + nm2 + "' uruchomiona\n")
+            let mut forked: bool = false
+            if hlpp_sys::can_fork() && !vm.win is
+                let gp: int = hlpp_sys::fork_proc()
+                if gp == 0 is
+                    vm.is_child = true
+                    forked = true
+                else if gp > 0 is
+                    vm.kids = array_push(vm.kids, gp)
+                    vm.pc = b
+                    forked = true
+                end
+            end
+            if !forked is snapshot(vm) end
+        else if op == o_goend is
+            if vm.is_child is
+                hlpp_sys::exit_now(0)
+            end
+            restore(vm)
+            setx(vm, 0)
+        else if op == o_chandecl is
+            let cs: int = hlpp_vm::slot_of(vm, "__chan_" + vm.p.lits[a])
+            hlpp_vm::set_var(vm, cs, "", 1)
+            setx(vm, 0)
+        else if op == o_chanop is
+            hlpp_sys::outln(hlpp_vm::get_dyn(vm, "__chan_" + vm.p.lits[a]))
+            setx(vm, 0)
+        else if op == o_bg is
+            let bcmd: string = string_trim(hlpp_vm::pop(vm))
+            let bp: int = hlpp_sys::spawn_bg(bcmd, "sh")
+            hlpp_vm::set_dyn(vm, "_bg_pid", to_string(bp), 2)
+            hlpp_sys::err("\u{1b}[90m[hl &] PID=" + to_string(bp) + "\u{1b}[0m\n")
+            setx(vm, 0)
+        else if op == o_hsh is
+            let hcmd: string = string_trim(hlpp_vm::pop(vm))
+            if string_len(hlpp_sys::which_path("hsh")) == 0 is
+                hlpp_vm::fail(vm, "hsh nie znaleziony: program 'hsh' nie jest w PATH")
+            else is
+                let hc: int = hlpp_sys::run_tty("hsh -c " + hlpp_sys::quote(hcmd))
+                setx(vm, hc)
+            end
+        else if op == o_hos is
+            let hr: int = hlpp_rt::run_hos(vm, vm.p.lits[a], hlpp_vm::pop(vm))
+            setx(vm, hr)
+        else if op == o_extern is
+            let er: int = hlpp_rt::run_extern(vm, vm.p.lits[a], vm.p.lits[b])
+            if vm.running is setx(vm, er) end
+        else if op == o_varprint is
+            hlpp_sys::outln(hlpp_vm::get_var(vm, a))
+            setx(vm, 0)
+        else if op == o_nop is
+            if a == 1 is setx(vm, 0) end
+        else if op == o_dyn_set is
+            let dv: string = hlpp_vm::pop(vm)
+            let dn: string = hlpp_vm::pop(vm)
+            hlpp_vm::set_dyn(vm, dn, dv, 1)
+        else if op == o_classdef is
+            hlpp_oop::class_def(vm, vm.p.lits[a], vm.p.lits[b])
+            setx(vm, 0)
+        else if op == o_defmeth is
+            hlpp_oop::method_def(vm, vm.p.lits[a], pc + 1, c)
+            vm.pc = b
+        else if op == o_fielddef is
+            hlpp_oop::field_def(vm, vm.p.lits[a], vm.p.lits[b])
+        else if op == o_new is
+            op_new(vm, vm.p.lits[a], b, hlpp_vm::pop(vm))
+        else if op == o_mcall is
+            op_mcall(vm, pc, a, vm.p.lits[b], hlpp_vm::pop(vm))
+        else if op == o_mret is
+            let rs: int = hlpp_vm::special(vm, 1, "_ret")
+            hlpp_vm::set_var(vm, a, hlpp_vm::get_var(vm, rs), 1)
+            setx(vm, 0)
+        else if op == o_setret is
+            hlpp_vm::set_var(vm, hlpp_vm::special(vm, 1, "_ret"), hlpp_vm::pop(vm), 1)
+        else if op == o_fget is
+            let os: string = hlpp_vm::pop(vm)
+            let oid: int = hlpp_vm::obj_id(os)
+            if oid < 0 || !hlpp_oop::is_obj(vm, oid) is
+                hlpp_vm::fail(vm, "Nie można odczytać pola '." + vm.p.lits[a] + "' — wartość '" + os + "' nie jest obiektem")
+            else is
+                hlpp_vm::push(vm, hlpp_oop::field_get(vm, oid, vm.p.lits[a]))
+            end
+        else if op == o_fset is
+            let fv: string = hlpp_vm::pop(vm)
+            let fid: int = obj_of_var(vm, a)
+            if fid >= 0 is
+                hlpp_oop::field_set(vm, fid, vm.p.lits[b], fv)
+                setx(vm, 0)
+            end
+        else if op == o_delete is
+            let did: int = obj_of_var(vm, a)
+            if did >= 0 is
+                hlpp_oop::free_object(vm, did)
+                hlpp_vm::unset_var(vm, a)
+                setx(vm, 0)
+            end
+        else if op == o_nfld is
+            let nid: int = obj_of_var(vm, a)
+            if nid >= 0 is
+                let fnum: hlpp_num::Num = hlpp_num::parse(hlpp_oop::field_get(vm, nid, vm.p.lits[b]))
+                if !fnum.ok is vm.nfail = true end
+                hlpp_vm::npush(vm, fnum.m, fnum.s)
+            end
+        else if op == o_nendf is
+            let eid: int = obj_of_var(vm, a)
+            if eid >= 0 is
+                hlpp_oop::field_set(vm, eid, vm.p.lits[b], hlpp_num::fmt(ntop(vm)))
+                setx(vm, 0)
+            end
+        else if op == o_ashell is
+            hlpp_vm::push(vm, hlpp_rt::arith_shell(vm, hlpp_vm::pop(vm)))
+        else if op == o_exit is
+            let ec: int = hlpp_text::int_or(string_trim(hlpp_vm::pop(vm)), 1)
+            hlpp_rt::finish_exit(vm, ec)
+        else if op == o_halt is
+            vm.running = false
+        end
+    end
+    hlpp_sys::flush_out()
+    if !vm.is_child is
+        let mut kk: int = 0
+        while kk < array_len(vm.kids) is
+            hlpp_sys::kill_proc(vm.kids[kk])
+            kk += 1
+        end
+    end
+end

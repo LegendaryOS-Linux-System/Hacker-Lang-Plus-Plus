@@ -1,1 +1,10 @@
+[workspace]
+-> members => hlpp
 
+[features]
+-> jit-cranelift => off
+-> native-ffi => off
+
+[package]
+-> name => hlpp-workspace
+-> version => 0.1.0

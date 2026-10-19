@@ -1,0 +1,12 @@
+using <gen 2026>
+% i = 0
+% s = 0
+?~ @i < 100000
+  $( @s + @i * 2 ) -> @s
+  $( @i + 1 ) -> @i
+done
+~> sum=@s
+: hello def
+  ~> hello from a function
+done
+-- hello

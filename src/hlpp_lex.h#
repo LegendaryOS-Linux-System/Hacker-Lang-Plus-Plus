@@ -1,0 +1,755 @@
+mod hlpp_text
+
+pub struct Tok is
+    pub k: string
+    pub a: string
+    pub b: string
+    pub c: string
+    pub n: int
+    pub line: int
+end
+
+pub struct Lx is
+    pub src: string
+    pub bs: [int]
+    pub len: int
+    pub pos: int
+    pub line: int
+    pub in_export: bool
+    pub edition: int
+    pub toks: [Tok]
+    pub err: string
+    pub err_line: int
+end
+
+fn tok(k: string, a: string, b: string, c: string, n: int, line: int) -> Tok is
+    return Tok { k: k, a: a, b: b, c: c, n: n, line: line }
+end
+
+fn peek(lx: Lx) -> int is
+    if lx.pos >= lx.len is return 0 - 1 end
+    return lx.bs[lx.pos]
+end
+
+fn peek_at(lx: Lx, k: int) -> int is
+    let p: int = lx.pos + k
+    if p >= lx.len is return 0 - 1 end
+    return lx.bs[p]
+end
+
+fn adv(lx: Lx) is
+    if lx.pos < lx.len is
+        if lx.bs[lx.pos] == 10 is lx.line += 1 end
+        lx.pos += 1
+    end
+end
+
+fn skip_n(lx: Lx, n: int) is
+    let mut i: int = 0
+    while i < n is
+        adv(lx)
+        i += 1
+    end
+end
+
+fn skip_ws(lx: Lx) is
+    while lx.pos < lx.len && (lx.bs[lx.pos] == 32 || lx.bs[lx.pos] == 9) is
+        lx.pos += 1
+    end
+end
+
+fn trim_right(s: string) -> string is
+    return string_trim_right(s)
+end
+
+fn read_line(lx: Lx) -> string is
+    let start: int = lx.pos
+    let mut e: int = lx.pos
+    while e < lx.len && lx.bs[e] != 10 is e += 1 end
+    lx.pos = e
+    return trim_right(string_slice(lx.src, start, e))
+end
+
+fn read_ident(lx: Lx) -> string is
+    let start: int = lx.pos
+    while lx.pos < lx.len && hlpp_text::is_ident_b(lx.bs[lx.pos]) is lx.pos += 1 end
+    return string_slice(lx.src, start, lx.pos)
+end
+
+fn read_ident_full(lx: Lx) -> string is
+    let start: int = lx.pos
+    while lx.pos < lx.len && (hlpp_text::is_ident_b(lx.bs[lx.pos]) || lx.bs[lx.pos] == 45) is lx.pos += 1 end
+    let mut s: string = string_slice(lx.src, start, lx.pos)
+    while string_ends_with(s, "-") is s = string_slice(s, 0, string_len(s) - 1) end
+    return s
+end
+
+fn match2(lx: Lx, a: int, b: int) -> bool is
+    return peek(lx) == a && peek_at(lx, 1) == b
+end
+
+fn match3(lx: Lx, a: int, b: int, c: int) -> bool is
+    return peek(lx) == a && peek_at(lx, 1) == b && peek_at(lx, 2) == c
+end
+
+;; odd number of unescaped double quotes => still inside a string literal
+fn has_unclosed_dquote(s: string) -> bool is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut open: bool = false
+    let mut i: int = 0
+    while i < n is
+        if bs[i] == 34 is
+            let mut cnt: int = 0
+            let mut j: int = i
+            while j > 0 && bs[j - 1] == 92 is
+                cnt += 1
+                j -= 1
+            end
+            if cnt % 2 == 0 is open = !open end
+        end
+        i += 1
+    end
+    return open
+end
+
+fn read_cmd(lx: Lx) -> string is
+    skip_ws(lx)
+    let mut r: string = read_line(lx)
+    while has_unclosed_dquote(r) is
+        if peek(lx) != 10 is break end
+        adv(lx)
+        r = r + "\n"
+        r = r + read_line(lx)
+    end
+    return r
+end
+
+;; "args |> @var" -> [args, var] or [] (outside quotes)
+pub fn split_pipe(line: string, trim_at: bool) -> [string] is
+    let bs: [int] = string_to_bytes(line)
+    let n: int = array_len(bs)
+    let mut in_s: bool = false
+    let mut in_d: bool = false
+    let mut i: int = 0
+    while i + 1 < n is
+        let c: int = bs[i]
+        if c == 39 && !in_d is
+            in_s = !in_s
+        else if c == 34 && !in_s is
+            in_d = !in_d
+        else if c == 124 && !in_s && !in_d && bs[i + 1] == 62 is
+            let cmd: string = string_trim(string_slice(line, 0, i))
+            let rest: string = string_trim(string_slice(line, i + 2, n))
+            let mut v: string = rest
+            if trim_at is
+                if string_starts_with(rest, "@") is
+                    let after: string = string_slice(rest, 1, string_len(rest))
+                    let rb: [int] = string_to_bytes(after)
+                    let mut e: int = 0
+                    while e < array_len(rb) && hlpp_text::is_ident_b(rb[e]) is e += 1 end
+                    v = string_slice(after, 0, e)
+                else is
+                    v = ""
+                end
+            else is
+                while string_starts_with(v, "@") is v = string_slice(v, 1, string_len(v)) end
+            end
+            if string_len(v) > 0 && (string_len(cmd) > 0 || trim_at) is return [cmd, v] end
+        end
+        i += 1
+    end
+    return []
+end
+
+fn push(lx: Lx, t: Tok) is
+    lx.toks = array_push(lx.toks, t)
+end
+
+fn fail(lx: Lx, msg: string) is
+    if string_len(lx.err) == 0 is
+        lx.err = msg
+        lx.err_line = lx.line
+    end
+end
+
+;; `<4k>` / `<1m>` / `<4096>` after `:: name` — returns "" when absent. found flag via `ok`
+fn try_arena_size(lx: Lx) -> string is
+    let sp: int = lx.pos
+    let sl: int = lx.line
+    skip_ws(lx)
+    if peek(lx) != 60 is
+        lx.pos = sp
+        lx.line = sl
+        return "\u{1}"
+    end
+    adv(lx)
+    let start: int = lx.pos
+    while lx.pos < lx.len && lx.bs[lx.pos] != 62 && lx.bs[lx.pos] != 10 is lx.pos += 1 end
+    if lx.pos >= lx.len || lx.bs[lx.pos] != 62 is
+        lx.pos = sp
+        lx.line = sl
+        return "\u{1}"
+    end
+    let sz: string = string_trim(string_slice(lx.src, start, lx.pos))
+    lx.pos += 1
+    return sz
+end
+
+fn kw_at(lx: Lx, word: string) -> bool is
+    let mut e: int = lx.pos
+    while e < lx.len && hlpp_text::is_alpha_b(lx.bs[e]) is e += 1 end
+    return string_slice(lx.src, lx.pos, e) == word
+end
+
+fn lex_colon(lx: Lx) is
+    let line: int = lx.line
+    ;; ── Hacker Lang++ sigils ─────────────────────────────────────────────
+    if lx.edition >= 1 is
+        if match2(lx, 58, 43) is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let name: string = read_ident_full(lx)
+            skip_ws(lx)
+            let mut parent: string = ""
+            if peek(lx) == 60 is
+                adv(lx)
+                skip_ws(lx)
+                parent = read_ident_full(lx)
+                skip_ws(lx)
+            end
+            read_ident(lx)
+            read_line(lx)
+            push(lx, tok("ClassDef", name, parent, "", 0, line))
+            return
+        end
+        if match2(lx, 58, 46) is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let name: string = read_ident_full(lx)
+            let rest: string = read_line(lx)
+            let mut params: string = string_trim(rest)
+            if string_ends_with(params, "def") is
+                params = string_trim(string_slice(params, 0, string_len(params) - 3))
+            end
+            push(lx, tok("MethodDef", name, params, "", 0, line))
+            return
+        end
+        if match2(lx, 58, 45) is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let name: string = read_ident_full(lx)
+            read_line(lx)
+            push(lx, tok("Delete", name, "", "", 0, line))
+            return
+        end
+    end
+    if match3(lx, 58, 42, 42) is
+        skip_n(lx, 3)
+        skip_ws(lx)
+        let name: string = read_ident_full(lx)
+        read_line(lx)
+        push(lx, tok("ChanDecl", name, "", "", 0, line))
+        return
+    end
+    if match2(lx, 58, 42) is
+        skip_n(lx, 2)
+        skip_ws(lx)
+        let rest: string = string_trim(read_line(lx))
+        let mut name: string = ""
+        let mut has: int = 0
+        if string_ends_with(rest, "def") is
+            name = string_trim(string_slice(rest, 0, string_len(rest) - 3))
+            if string_len(name) > 0 is has = 1 end
+        else if string_len(rest) > 0 is
+            name = rest
+            has = 1
+        end
+        push(lx, tok("Go", name, "", "", has, line))
+        return
+    end
+    if match2(lx, 58, 58) is
+        skip_n(lx, 2)
+        skip_ws(lx)
+        let name: string = read_ident_full(lx)
+        skip_ws(lx)
+        let saved: int = lx.pos
+        let saved_line: int = lx.line
+        let sz: string = try_arena_size(lx)
+        skip_ws(lx)
+        if kw_at(lx, "def") is
+            read_ident(lx)
+            read_line(lx)
+            let mut size: string = sz
+            if sz == "\u{1}" is size = "" end
+            push(lx, tok("ArenaDef", name, size, "", 0, line))
+        else is
+            if sz != "\u{1}" is
+                lx.pos = saved
+                lx.line = saved_line
+                skip_ws(lx)
+            end
+            let l: string = read_line(lx)
+            let sp: [string] = split_pipe(l, true)
+            if array_len(sp) == 2 is
+                push(lx, tok("QuickPipe", name, sp[0], sp[1], 0, line))
+            else is
+                push(lx, tok("Quick", name, l, "", 0, line))
+            end
+        end
+        return
+    end
+    adv(lx)
+    skip_ws(lx)
+    let name: string = read_ident_full(lx)
+    skip_ws(lx)
+    let kw: string = read_ident(lx)
+    if kw == "def" is
+        push(lx, tok("FuncDef", name, "", "", 0, line))
+        read_line(lx)
+    else is
+        push(lx, tok("Ident", ":" + name + " " + kw, "", "", 0, line))
+    end
+end
+
+fn push_cmd(lx: Lx, line: string, mode: int, pipe_mode: int, ln: int) is
+    let sp: [string] = split_pipe(line, false)
+    if array_len(sp) == 2 is
+        push(lx, tok("CmdPipe", sp[0], sp[1], "", pipe_mode, ln))
+    else is
+        push(lx, tok("Cmd", line, "", "", mode, ln))
+    end
+end
+
+pub fn tokenize(src: string, edition: int) -> Lx is
+    let lx: Lx = Lx { src: src, bs: string_to_bytes(src), len: string_len(src), pos: 0, line: 1,
+                      in_export: false, edition: edition, toks: [], err: "", err_line: 0 }
+    while lx.pos < lx.len && string_len(lx.err) == 0 is
+        let ch: int = lx.bs[lx.pos]
+        let line: int = lx.line
+        if lx.in_export is
+            if ch == 10 is
+                push(lx, tok("Newline", "", "", "", 0, line))
+                adv(lx)
+            else if ch == 32 || ch == 9 || ch == 13 is
+                adv(lx)
+            else if ch == 124 && peek_at(lx, 1) != 62 && peek_at(lx, 1) != 124 is
+                adv(lx)
+                skip_ws(lx)
+                push(lx, tok("ExportItem", read_line(lx), "", "", 0, line))
+            else if ch == 93 is
+                adv(lx)
+                lx.in_export = false
+                push(lx, tok("ExportEnd", "", "", "", 0, line))
+                read_line(lx)
+            else if ch == 59 && peek_at(lx, 1) == 59 is
+                skip_n(lx, 2)
+                push(lx, tok("Comment", read_line(lx), "", "", 0, line))
+            else is
+                fail(lx, "Nieoczekiwany znak w liście eksportu")
+            end
+            continue
+        end
+
+        if ch == 10 is
+            push(lx, tok("Newline", "", "", "", 0, line))
+            adv(lx)
+        else if ch == 32 || ch == 9 || ch == 13 is
+            adv(lx)
+        else if ch == 126 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            push(lx, tok("Print", read_line(lx), "", "", 0, line))
+        else if ch == 36 && peek_at(lx, 1) == 40 is
+            skip_n(lx, 2)
+            let mut expr: string = ""
+            let start: int = lx.pos
+            let mut depth: int = 1
+            let mut endp: int = lx.pos
+            while lx.pos < lx.len is
+                let c: int = lx.bs[lx.pos]
+                if c == 40 is
+                    depth += 1
+                else if c == 41 is
+                    depth -= 1
+                    if depth == 0 is
+                        endp = lx.pos
+                        lx.pos += 1
+                        break
+                    end
+                end
+                lx.pos += 1
+                endp = lx.pos
+            end
+            expr = string_trim(string_slice(lx.src, start, endp))
+            skip_ws(lx)
+            let mut assign: string = ""
+            let mut has: int = 0
+            if match2(lx, 45, 62) is
+                skip_n(lx, 2)
+                skip_ws(lx)
+                if peek(lx) == 64 is adv(lx) end
+                let mut v: string = read_ident_full(lx)
+                if lx.edition >= 1 && peek(lx) == 46 && string_len(v) > 0 is
+                    adv(lx)
+                    v = v + "." + read_ident_full(lx)
+                end
+                if string_len(v) > 0 is
+                    assign = v
+                    has = 1
+                end
+            end
+            push(lx, tok("Arith", expr, assign, "", has, line))
+        else if ch == 124 && peek_at(lx, 1) == 124 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let start: int = lx.pos
+            while lx.pos < lx.len && (hlpp_text::is_ident_b(lx.bs[lx.pos]) || lx.bs[lx.pos] == 45 || lx.bs[lx.pos] == 35) is lx.pos += 1 end
+            let tool: string = string_slice(lx.src, start, lx.pos)
+            skip_ws(lx)
+            push(lx, tok("HosApi", tool, read_line(lx), "", 0, line))
+        else if ch == 124 && peek_at(lx, 1) != 62 is
+            adv(lx)
+            skip_ws(lx)
+            let l: string = read_line(lx)
+            let p: int = string_find(l, "->")
+            let mut pat: string = string_trim(l)
+            if p >= 0 is pat = string_trim(string_slice(l, 0, p)) end
+            push(lx, tok("SwitchArm", pat, "", "", 0, line))
+        else if ch == 58 is
+            lex_colon(lx)
+        else if ch == 59 && peek_at(lx, 1) == 59 is
+            skip_n(lx, 2)
+            push(lx, tok("Comment", read_line(lx), "", "", 0, line))
+        else if ch == 47 && match3(lx, 47, 47, 47) is
+            skip_n(lx, 3)
+            push(lx, tok("Comment", read_line(lx), "", "", 0, line))
+        else if ch == 47 && peek_at(lx, 1) == 47 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let raw: string = string_trim(read_line(lx))
+            let lb: int = string_find(raw, "[")
+            let rb: int = string_rfind(raw, "]")
+            if lb >= 0 && rb > lb is
+                let nm: string = string_trim(string_slice(raw, 0, lb))
+                let pk: string = string_trim(string_slice(raw, lb + 1, rb))
+                push(lx, tok("Dep", nm, pk, "", 0, line))
+            else is
+                push(lx, tok("Dep", raw, "", "", 0, line))
+            end
+        else if ch == 60 && peek_at(lx, 1) == 42 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            push(lx, tok("DirImport", string_trim(read_line(lx)), "", "", 0, line))
+        else if ch == 60 && peek_at(lx, 1) == 60 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let rest: string = read_line(lx)
+            let p: int = string_find(rest, "|")
+            if p >= 0 is
+                let path: string = string_trim(string_slice(rest, 0, p))
+                let det: string = string_trim(string_slice(rest, p + 1, string_len(rest)))
+                let mut has: int = 0
+                if string_len(det) > 0 is has = 1 end
+                push(lx, tok("FileImport", path, det, "", has, line))
+            else is
+                push(lx, tok("FileImport", string_trim(rest), "", "", 0, line))
+            end
+        else if ch == 45 && peek_at(lx, 1) == 45 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            push(lx, tok("FuncCall", read_ident_full(lx), "", "", 0, line))
+            read_line(lx)
+        else if ch == 61 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let name: string = read_ident_full(lx)
+            skip_ws(lx)
+            let nx: int = peek(lx)
+            if nx == 61 is
+                adv(lx)
+                skip_ws(lx)
+                push(lx, tok("ExportSingle", name, read_line(lx), "", 0, line))
+            else if nx == 91 is
+                adv(lx)
+                read_line(lx)
+                lx.in_export = true
+                push(lx, tok("ExportStart", name, "", "", 0, line))
+            else is
+                push(lx, tok("ExportSingle", name, "", "", 0, line))
+            end
+        else if ch == 94 && match3(lx, 94, 45, 62) is
+            skip_n(lx, 3)
+            push(lx, tok("Cmd", read_cmd(lx), "", "", 3, line))
+        else if ch == 94 && match3(lx, 94, 62, 62) is
+            skip_n(lx, 3)
+            push_cmd(lx, read_cmd(lx), 5, 4, line)
+        else if ch == 94 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            push_cmd(lx, read_cmd(lx), 1, 1, line)
+        else if ch == 94 is
+            adv(lx)
+        else if ch == 45 && match3(lx, 45, 62, 62) is
+            skip_n(lx, 3)
+            push_cmd(lx, read_cmd(lx), 6, 4, line)
+        else if ch == 45 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            push(lx, tok("Cmd", read_cmd(lx), "", "", 2, line))
+        else if ch == 47 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            let l: string = read_cmd(lx)
+            let sp: [string] = split_pipe(l, false)
+            if array_len(sp) == 2 is
+                push(lx, tok("BuiltinPipe", sp[0], sp[1], "", 0, line))
+            else is
+                push(lx, tok("Builtin", l, "", "", 0, line))
+            end
+        else if ch == 62 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            push_cmd(lx, read_cmd(lx), 4, 4, line)
+        else if ch == 62 is
+            adv(lx)
+            push_cmd(lx, read_cmd(lx), 0, 0, line)
+        else if ch == 38 is
+            adv(lx)
+            skip_ws(lx)
+            push(lx, tok("Bg", read_line(lx), "", "", 0, line))
+        else if ch == 95 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let start: int = lx.pos
+            while lx.pos < lx.len && lx.bs[lx.pos] != 32 && lx.bs[lx.pos] != 9 && lx.bs[lx.pos] != 91 && lx.bs[lx.pos] != 10 is lx.pos += 1 end
+            let file: string = string_slice(lx.src, start, lx.pos)
+            skip_ws(lx)
+            let mut rt: string = ""
+            if peek(lx) == 91 is
+                adv(lx)
+                let s2: int = lx.pos
+                while lx.pos < lx.len && lx.bs[lx.pos] != 93 && lx.bs[lx.pos] != 10 is lx.pos += 1 end
+                rt = string_trim(string_slice(lx.src, s2, lx.pos))
+                if peek(lx) == 93 is adv(lx) end
+            else is
+                let dot: int = string_rfind(file, ".")
+                let mut ext: string = ""
+                if dot >= 0 is ext = string_lower(string_slice(file, dot + 1, string_len(file))) end
+                if ext == "sh" || ext == "bash" is
+                    rt = "shell"
+                else if ext == "py" is
+                    rt = "python"
+                else if ext == "jar" is
+                    rt = "java"
+                else if ext == "so" is
+                    rt = "so"
+                else is
+                    rt = "elf"
+                end
+            end
+            skip_ws(lx)
+            let kw: string = read_ident(lx)
+            if kw == "def" is read_line(lx) end
+            push(lx, tok("ExternStart", file, rt, "", 0, line))
+        else if ch == 42 && match3(lx, 42, 45, 45) is
+            skip_n(lx, 3)
+            skip_ws(lx)
+            push(lx, tok("ChanOp", read_ident_full(lx), "", "", 0, line))
+            read_line(lx)
+        else if ch == 42 && peek_at(lx, 1) == 62 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            push(lx, tok("Hsh", read_line(lx), "", "", 0, line))
+        else if ch == 43 && peek_at(lx, 1) == 62 && lx.edition >= 1 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let cls: string = read_ident_full(lx)
+            skip_ws(lx)
+            let var: string = read_ident_full(lx)
+            skip_ws(lx)
+            push(lx, tok("New", cls, var, read_line(lx), 0, line))
+        else if ch == 46 && peek_at(lx, 1) == 62 && lx.edition >= 1 is
+            skip_n(lx, 2)
+            skip_ws(lx)
+            let obj: string = read_ident_full(lx)
+            skip_ws(lx)
+            let meth: string = read_ident_full(lx)
+            skip_ws(lx)
+            let rest: string = read_line(lx)
+            let sp: [string] = split_pipe(rest, false)
+            if array_len(sp) == 2 is
+                push(lx, tok("MCall", obj, meth, sp[0], 1, line))
+                push(lx, tok("MCallVar", sp[1], "", "", 0, line))
+            else is
+                push(lx, tok("MCall", obj, meth, rest, 0, line))
+            end
+        else if ch == 95 is
+            adv(lx)
+            let start: int = lx.pos
+            while lx.pos < lx.len && hlpp_text::is_digit_b(lx.bs[lx.pos]) is lx.pos += 1 end
+            let digits: string = string_slice(lx.src, start, lx.pos)
+            if string_len(digits) > 0 is
+                let mut next_alnum: bool = false
+                if lx.pos < lx.len is next_alnum = hlpp_text::is_ident_b(lx.bs[lx.pos]) end
+                if !next_alnum is
+                    push(lx, tok("Repeat", "", "", "", hlpp_text::int_or(digits, 1), line))
+                else is
+                    push(lx, tok("VarRef", "_" + digits + read_ident_full(lx), "", "", 0, line))
+                end
+            else is
+                let rest: string = read_ident_full(lx)
+                if string_len(rest) == 0 is
+                    push(lx, tok("Comment", "", "", "", 0, line))
+                else is
+                    push(lx, tok("VarRef", "_" + rest, "", "", 0, line))
+                end
+            end
+        else if ch == 64 is
+            adv(lx)
+            skip_ws(lx)
+            let name: string = read_ident_full(lx)
+            skip_ws(lx)
+            if kw_at(lx, "in") is
+                read_ident(lx)
+                skip_ws(lx)
+                push(lx, tok("ForIn", name, read_line(lx), "", 0, line))
+            else is
+                push(lx, tok("VarRef", name, "", "", 0, line))
+            end
+        else if ch == 37 is
+            adv(lx)
+            skip_ws(lx)
+            let mut name: string = read_ident_full(lx)
+            if lx.edition >= 1 && peek(lx) == 46 is
+                adv(lx)
+                name = name + "." + read_ident_full(lx)
+            end
+            skip_ws(lx)
+            let mut typ: string = ""
+            if peek(lx) == 58 is
+                adv(lx)
+                skip_ws(lx)
+                typ = read_ident_full(lx)
+            end
+            skip_ws(lx)
+            if peek(lx) == 61 is
+                adv(lx)
+                skip_ws(lx)
+                push(lx, tok("VarDecl", name, typ, read_line(lx), 0, line))
+            else is
+                push(lx, tok("Ident", "%" + name, "", "", 0, line))
+            end
+        else if ch == 63 is
+            adv(lx)
+            skip_ws(lx)
+            if peek(lx) == 126 is
+                adv(lx)
+                skip_ws(lx)
+                push(lx, tok("While", read_line(lx), "", "", 0, line))
+            else is
+                let kw: string = read_ident(lx)
+                if kw == "ok" is
+                    push(lx, tok("IfOk", "", "", "", 0, line))
+                    read_line(lx)
+                else if kw == "err" is
+                    push(lx, tok("IfErr", "", "", "", 0, line))
+                    read_line(lx)
+                else if kw == "switch" is
+                    skip_ws(lx)
+                    push(lx, tok("Switch", read_line(lx), "", "", 0, line))
+                else is
+                    push(lx, tok("Ident", "?" + kw, "", "", 0, line))
+                end
+            end
+        else if ch == 35 is
+            adv(lx)
+            if peek(lx) == 33 is
+                push(lx, tok("Comment", read_line(lx), "", "", 0, line))
+            else is
+                skip_ws(lx)
+                let rest: string = read_line(lx)
+                push(lx, import_tok(rest, line))
+            end
+        else if ch == 34 is
+            ;; string literal at statement level: parsed and ignored like hl does
+            adv(lx)
+            let mut closed: bool = false
+            while lx.pos < lx.len is
+                let c: int = lx.bs[lx.pos]
+                if c == 92 is
+                    lx.pos += 2
+                else if c == 34 is
+                    lx.pos += 1
+                    closed = true
+                    break
+                else is
+                    adv(lx)
+                end
+            end
+            if !closed is fail(lx, "Niezamknięty string") end
+            push(lx, tok("Str", "", "", "", 0, line))
+        else if hlpp_text::is_digit_b(ch) is
+            let start: int = lx.pos
+            while lx.pos < lx.len && (hlpp_text::is_digit_b(lx.bs[lx.pos]) || lx.bs[lx.pos] == 46) is lx.pos += 1 end
+            push(lx, tok("Number", string_slice(lx.src, start, lx.pos), "", "", 0, line))
+        else if hlpp_text::is_alpha_b(ch) is
+            let id: string = read_ident_full(lx)
+            if id == "done" is
+                push(lx, tok("Done", "", "", "", 0, line))
+                read_line(lx)
+            else if id == "using" is
+                skip_ws(lx)
+                push(lx, tok("Using", "using " + read_line(lx), "", "", 0, line))
+            else if id == "true" || id == "false" is
+                push(lx, tok("Bool", id, "", "", 0, line))
+            else is
+                push(lx, tok("Ident", id, "", "", 0, line))
+            end
+        else if ch == 47 || ch == 46 is
+            let start: int = lx.pos
+            adv(lx)
+            while lx.pos < lx.len && (hlpp_text::is_ident_b(lx.bs[lx.pos]) || lx.bs[lx.pos] == 47 || lx.bs[lx.pos] == 46 || lx.bs[lx.pos] == 45) is lx.pos += 1 end
+            push(lx, tok("Ident", string_slice(lx.src, start, lx.pos), "", "", 0, line))
+        else if ch == 61 is
+            adv(lx)
+        else is
+            fail(lx, "Nieoczekiwany znak '" + string_slice(lx.src, lx.pos, lx.pos + 1) + "'")
+        end
+    end
+    push(lx, tok("Eof", "", "", "", 0, lx.line))
+    return lx
+end
+
+;; `# <spec> | <detail>`  /  legacy `lib <- detail`  /  bare `lib`
+fn import_tok(rest: string, line: int) -> Tok is
+    let t: string = string_trim(rest)
+    if string_starts_with(t, "<") is
+        let c1: int = string_find(t, ">")
+        if c1 > 0 is
+            let spec: string = normalize_spec(string_trim(string_slice(t, 1, c1)))
+            let tail: string = string_trim(string_slice(t, c1 + 1, string_len(t)))
+            if string_starts_with(tail, "|") is
+                let mut ap: string = string_trim(string_slice(tail, 1, string_len(tail)))
+                if string_starts_with(ap, "<") && string_ends_with(ap, ">") is
+                    ap = string_trim(string_slice(ap, 1, string_len(ap) - 1))
+                else is
+                    while string_starts_with(ap, "<") is ap = string_trim(string_slice(ap, 1, string_len(ap))) end
+                end
+                if string_len(ap) > 0 is return tok("Import", spec, ap, "", 1, line) end
+            end
+            return tok("Import", spec, "", "", 0, line)
+        end
+    end
+    let ar: int = string_find(t, "<-")
+    if ar >= 0 is
+        let spec: string = normalize_spec(string_trim(string_slice(t, 0, ar)))
+        let det: string = string_trim(string_slice(t, ar + 2, string_len(t)))
+        if string_len(det) > 0 is return tok("Import", spec, det, "", 1, line) end
+        return tok("Import", spec, "", "", 0, line)
+    end
+    return tok("Import", normalize_spec(t), "", "", 0, line)
+end
+
+pub fn normalize_spec(raw: string) -> string is
+    if string_starts_with(raw, "std/") is return "main/" + string_slice(raw, 4, string_len(raw)) end
+    if string_starts_with(raw, "virus/") is return "bit/" + string_slice(raw, 6, string_len(raw)) end
+    if string_starts_with(raw, "community/") is return "github/" + string_slice(raw, 10, string_len(raw)) end
+    return raw
+end

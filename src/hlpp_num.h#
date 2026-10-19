@@ -1,0 +1,227 @@
+mod hlpp_text
+
+pub struct Num is
+    pub m: int
+    pub s: int
+    pub ok: bool
+end
+
+pub fn bad() -> Num is
+    return Num { m: 0, s: 0, ok: false }
+end
+
+pub fn of_int(v: int) -> Num is
+    return Num { m: v, s: 0, ok: true }
+end
+
+fn pow10(n: int) -> int is
+    let mut r: int = 1
+    let mut i: int = 0
+    while i < n is
+        r = r * 10
+        i += 1
+    end
+    return r
+end
+
+;; drop trailing zeros of the fraction
+pub fn norm(n: Num) -> Num is
+    let mut m: int = n.m
+    let mut s: int = n.s
+    while s > 0 && m % 10 == 0 is
+        m = m / 10
+        s -= 1
+    end
+    if m == 0 is s = 0 end
+    return Num { m: m, s: s, ok: n.ok }
+end
+
+;; "12", "-3.50", ".5", "5.", "+7"  (no exponents / inf / nan: those go to the shell fallback)
+pub fn parse(str: string) -> Num is
+    let t: string = string_trim(str)
+    let bs: [int] = string_to_bytes(t)
+    let n: int = array_len(bs)
+    if n == 0 is return bad() end
+    let mut i: int = 0
+    let mut neg: bool = false
+    if bs[0] == 45 || bs[0] == 43 is
+        neg = bs[0] == 45
+        i = 1
+    end
+    let mut m: int = 0
+    let mut scale: int = 0
+    let mut digits: int = 0
+    let mut seen_dot: bool = false
+    let mut got_digit: bool = false
+    while i < n is
+        let c: int = bs[i]
+        if c == 46 is
+            if seen_dot is return bad() end
+            seen_dot = true
+        else if c >= 48 && c <= 57 is
+            got_digit = true
+            if seen_dot is
+                if scale < 12 is
+                    m = m * 10 + (c - 48)
+                    scale += 1
+                    digits += 1
+                end
+            else is
+                m = m * 10 + (c - 48)
+                digits += 1
+            end
+            if digits > 18 is return bad() end
+        else is
+            return bad()
+        end
+        i += 1
+    end
+    if !got_digit is return bad() end
+    if neg is m = 0 - m end
+    return norm(Num { m: m, s: scale, ok: true })
+end
+
+fn align_m(n: Num, s: int) -> int is
+    return n.m * pow10(s - n.s)
+end
+
+pub fn add(a: Num, b: Num) -> Num is
+    let mut s: int = a.s
+    if b.s > s is s = b.s end
+    return norm(Num { m: align_m(a, s) + align_m(b, s), s: s, ok: true })
+end
+
+pub fn sub(a: Num, b: Num) -> Num is
+    let mut s: int = a.s
+    if b.s > s is s = b.s end
+    return norm(Num { m: align_m(a, s) - align_m(b, s), s: s, ok: true })
+end
+
+pub fn mul(a: Num, b: Num) -> Num is
+    let mut m: int = a.m * b.m
+    let mut s: int = a.s + b.s
+    while s > 12 is
+        m = m / 10
+        s -= 1
+    end
+    return norm(Num { m: m, s: s, ok: true })
+end
+
+;; hl: x / 0 == 0
+pub fn div(a: Num, b: Num) -> Num is
+    if b.m == 0 is return of_int(0) end
+    let mut s: int = a.s
+    if b.s > s is s = b.s end
+    let am: int = align_m(a, s)
+    let bm: int = align_m(b, s)
+    let mut neg: bool = false
+    let mut x: int = am
+    let mut y: int = bm
+    if x < 0 is
+        x = 0 - x
+        neg = !neg
+    end
+    if y < 0 is
+        y = 0 - y
+        neg = !neg
+    end
+    let q: int = x / y
+    let mut rem: int = x % y
+    let mut frac: int = 0
+    let mut fd: int = 0
+    while fd < 12 && rem != 0 is
+        rem = rem * 10
+        frac = frac * 10 + rem / y
+        rem = rem % y
+        fd += 1
+    end
+    let mut m: int = q * pow10(fd) + frac
+    if neg is m = 0 - m end
+    return norm(Num { m: m, s: fd, ok: true })
+end
+
+;; truncate to integer (toward zero)
+pub fn trunc(a: Num) -> int is
+    return a.m / pow10(a.s)
+end
+
+;; hl: (left as i64) % (right as i64), 0 when divisor is 0
+pub fn rem(a: Num, b: Num) -> Num is
+    let y: int = trunc(b)
+    if y == 0 is return of_int(0) end
+    return of_int(trunc(a) % y)
+end
+
+pub fn neg(a: Num) -> Num is
+    return Num { m: 0 - a.m, s: a.s, ok: a.ok }
+end
+
+;; -1 / 0 / 1
+pub fn cmp(a: Num, b: Num) -> int is
+    let mut s: int = a.s
+    if b.s > s is s = b.s end
+    let x: int = align_m(a, s)
+    let y: int = align_m(b, s)
+    if x < y is return 0 - 1 end
+    if x > y is return 1 end
+    return 0
+end
+
+pub fn is_zero(a: Num) -> bool is
+    return a.m == 0
+end
+
+pub fn fmt(n: Num) -> string is
+    let a: Num = norm(n)
+    let mut m: int = a.m
+    if a.s == 0 is
+        let whole: int = m
+        return to_string(whole)
+    end
+    let mut sign: string = ""
+    if m < 0 is
+        sign = "-"
+        m = 0 - m
+    end
+    let p: int = pow10(a.s)
+    let ip: int = m / p
+    let fr: int = m % p
+    let mut fp: string = to_string(fr)
+    while string_len(fp) < a.s is fp = "0" + fp end
+    return sign + to_string(ip) + "." + fp
+end
+
+;; unary functions used by :: abs/ceil/floor/round
+pub fn floor_i(a: Num) -> int is
+    let p: int = pow10(a.s)
+    let mut q: int = a.m / p
+    if a.m % p < 0 is q -= 1 end
+    return q
+end
+
+pub fn ceil_i(a: Num) -> int is
+    let p: int = pow10(a.s)
+    let mut q: int = a.m / p
+    if a.m % p > 0 is q += 1 end
+    return q
+end
+
+pub fn round_i(a: Num) -> int is
+    let p: int = pow10(a.s)
+    let half: int = p / 2
+    if a.s == 0 is return a.m end
+    if a.m >= 0 is return (a.m + half) / p end
+    return 0 - ((0 - a.m + half) / p)
+end
+
+pub fn abs(a: Num) -> Num is
+    if a.m < 0 is return neg(a) end
+    return a
+end
+
+;; numeric value of arbitrary text, 0 when not numeric (hl: parse::<f64>().unwrap_or(0.0))
+pub fn val_or0(s: string) -> Num is
+    let n: Num = parse(s)
+    if n.ok is return n end
+    return of_int(0)
+end

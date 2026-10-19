@@ -1,0 +1,77 @@
+mod hlpp_text
+mod hlpp_map
+mod hlpp_ops
+
+pub struct Prog is
+    pub code: [int]
+    pub lits: [string]
+    pub litmap: hlpp_map::SMap
+    pub names: [string]
+    pub symmap: hlpp_map::SMap
+    pub arenas: hlpp_map::SMap
+    pub edition: int          ;; 0 = Hacker Lang compat, 1 = Hacker Lang++
+    pub gen: int              ;; hl generation (1, 2); 3 = ROLLING (everything on)
+    pub file: string
+    pub errs: [string]
+    pub err_lines: [int]
+    pub class_name: string    ;; class being compiled ("" outside)
+    pub lines: [int]          ;; source line per instruction (diagnostics)
+    pub cur_line: int
+    pub src: string           ;; main source text (for nidus snippets)
+    pub rolling: bool
+end
+
+pub fn new_prog(edition: int, file: string) -> Prog is
+    return Prog { code: [], lits: [], litmap: hlpp_map::new(), names: [], symmap: hlpp_map::new(),
+                  arenas: hlpp_map::new(), edition: edition, gen: 2, file: file, errs: [], err_lines: [],
+                  class_name: "", lines: [], cur_line: 0, src: "", rolling: false }
+end
+
+pub fn lit(p: Prog, s: string) -> int is
+    let i: int = hlpp_map::find(p.litmap, s)
+    if i >= 0 is return p.litmap.vals[i] end
+    let idx: int = array_len(p.lits)
+    p.lits = array_push(p.lits, s)
+    hlpp_map::put(p.litmap, s, idx)
+    return idx
+end
+
+pub fn slot(p: Prog, name: string) -> int is
+    let i: int = hlpp_map::find(p.symmap, name)
+    if i >= 0 is return p.symmap.vals[i] end
+    let idx: int = array_len(p.names)
+    p.names = array_push(p.names, name)
+    hlpp_map::put(p.symmap, name, idx)
+    return idx
+end
+
+pub fn here(p: Prog) -> int is
+    return array_len(p.code) / 4
+end
+
+pub fn emit(p: Prog, op: int, a: int, b: int, c: int) -> int is
+    let at: int = array_len(p.code) / 4
+    p.code = array_push(p.code, op)
+    p.code = array_push(p.code, a)
+    p.code = array_push(p.code, b)
+    p.code = array_push(p.code, c)
+    p.lines = array_push(p.lines, p.cur_line)
+    return at
+end
+
+pub fn patch_a(p: Prog, at: int, v: int) is
+    p.code[at * 4 + 1] = v
+end
+
+pub fn patch_b(p: Prog, at: int, v: int) is
+    p.code[at * 4 + 2] = v
+end
+
+pub fn patch_c(p: Prog, at: int, v: int) is
+    p.code[at * 4 + 3] = v
+end
+
+pub fn add_error(p: Prog, msg: string, line: int) is
+    p.errs = array_push(p.errs, msg)
+    p.err_lines = array_push(p.err_lines, line)
+end

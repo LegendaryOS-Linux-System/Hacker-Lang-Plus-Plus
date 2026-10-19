@@ -1,0 +1,166 @@
+pub fn op_halt() -> int is return 0 end   ;; stop
+pub fn op_lit() -> int is return 1 end   ;; push lits[a]
+pub fn op_var() -> int is return 2 end   ;; push value of var slot a
+pub fn op_dyn() -> int is return 3 end   ;; pop name, push var value
+pub fn op_cat() -> int is return 4 end   ;; concat top a strings
+pub fn op_print() -> int is return 5 end   ;; pop, print line
+pub fn op_printlit() -> int is return 6 end   ;; print lits[a] line
+pub fn op_set() -> int is return 7 end   ;; pop -> var a, type b
+pub fn op_setlit() -> int is return 8 end   ;; var a = lits[b], type c
+pub fn op_jmp() -> int is return 9 end   ;; pc = a
+pub fn op_jifok() -> int is return 10 end   ;; if last_exit==0 pc=a
+pub fn op_jiferr() -> int is return 11 end   ;; if last_exit!=0 pc=a
+pub fn op_jtrue() -> int is return 12 end   ;; if flag pc=a
+pub fn op_jfalse() -> int is return 13 end   ;; if !flag pc=a
+pub fn op_exec() -> int is return 14 end   ;; pop cmd; run mode a; b=1 check echo
+pub fn op_execcap() -> int is return 15 end   ;; pop cmd; run mode a; stdout -> var b
+pub fn op_quick() -> int is return 16 end   ;; pop args; quick fn lits[a]
+pub fn op_quickcap() -> int is return 17 end   ;; pop args; quick fn lits[a] -> var b
+pub fn op_builtin() -> int is return 18 end   ;; pop line; coreutils
+pub fn op_builtincap() -> int is return 19 end   ;; pop line; coreutils -> var a
+pub fn op_nbeg() -> int is return 20 end   ;; reset numeric stack
+pub fn op_nlit() -> int is return 21 end   ;; push number lits[a]
+pub fn op_nvar() -> int is return 22 end   ;; push number of var a
+pub fn op_nbin() -> int is return 23 end   ;; binary op a (+-*/%)
+pub fn op_nneg() -> int is return 24 end   ;; negate top
+pub fn op_nend() -> int is return 25 end   ;; store numeric result: var a (-1 print), b = lit of source expr
+pub fn op_nendf() -> int is return 26 end   ;; numeric result -> field lits[b] of object var a
+pub fn op_nfld() -> int is return 27 end   ;; push number of field lits[b] of obj var a
+pub fn op_call() -> int is return 28 end   ;; call function lits[a]
+pub fn op_ret() -> int is return 29 end   ;; return
+pub fn op_deffunc() -> int is return 30 end   ;; define function lits[a], body follows, skip to b
+pub fn op_defarena() -> int is return 31 end   ;; define arena function lits[a] size lits[c], skip to b
+pub fn op_callarena() -> int is return 32 end   ;; pop args; call arena fn lits[a]
+pub fn op_forinit() -> int is return 33 end   ;; pop list string; push iteration frame
+pub fn op_fornext() -> int is return 34 end   ;; next item -> var a or jump b
+pub fn op_forend() -> int is return 35 end   ;; pop iteration frame
+pub fn op_cond() -> int is return 36 end   ;; pop string; flag = hl condition
+pub fn op_cmpv() -> int is return 37 end   ;; flag = cmp(a=op, b=operand, c=operand)
+pub fn op_cmps() -> int is return 38 end   ;; pop two strings; flag = cmp op a
+pub fn op_whinit() -> int is return 39 end   ;; push loop counter
+pub fn op_whtick() -> int is return 40 end   ;; count iteration; error past limit
+pub fn op_whend() -> int is return 41 end   ;; pop loop counter
+pub fn op_swbeg() -> int is return 42 end   ;; pop subject -> switch stack
+pub fn op_swcmp() -> int is return 43 end   ;; if subject==lits[a] pc=b
+pub fn op_swcmpi() -> int is return 44 end   ;; if subject==interpolated pop pc=b
+pub fn op_swend() -> int is return 45 end   ;; pop switch stack
+pub fn op_rptinit() -> int is return 46 end   ;; push repeat counter a
+pub fn op_rptnext() -> int is return 47 end   ;; dec; if zero pc=a
+pub fn op_rptend() -> int is return 48 end   ;; pop repeat counter
+pub fn op_export() -> int is return 49 end   ;; pop -> var a + setenv
+pub fn op_dep() -> int is return 50 end   ;; dependency lits[a] apt lits[b]
+pub fn op_import() -> int is return 51 end   ;; import lits[a] detail lits[b] has c
+pub fn op_fileimport() -> int is return 52 end   ;; pop path; detail lits[a] has b
+pub fn op_dirimport() -> int is return 53 end   ;; pop path
+pub fn op_gobeg() -> int is return 54 end   ;; goroutine lits[a]
+pub fn op_goend() -> int is return 55 end   ;; end goroutine
+pub fn op_chandecl() -> int is return 56 end   ;; channel lits[a]
+pub fn op_chanop() -> int is return 57 end   ;; print channel lits[a]
+pub fn op_bg() -> int is return 58 end   ;; pop cmd; background
+pub fn op_hsh() -> int is return 59 end   ;; pop cmd; hsh -c
+pub fn op_hos() -> int is return 60 end   ;; pop args; hackeros tool lits[a]
+pub fn op_extern() -> int is return 61 end   ;; extern def: file lits[a] runtime lits[b]; body follows, skip to c
+pub fn op_externend() -> int is return 62 end   ;; end extern body
+pub fn op_varprint() -> int is return 63 end   ;; print var a
+pub fn op_nop() -> int is return 64 end   ;; nothing
+pub fn op_dyn_set() -> int is return 65 end   ;; pop value,pop name -> var
+pub fn op_classdef() -> int is return 66 end   ;; class lits[a] parent lits[b]
+pub fn op_defmeth() -> int is return 67 end   ;; method lits[a] of current class, skip to b, params lits[c]
+pub fn op_new() -> int is return 68 end   ;; pop args; new object class lits[a] -> var b
+pub fn op_mcall() -> int is return 69 end   ;; pop args; obj var a method lits[b] ; c=1 result->next op var
+pub fn op_fget() -> int is return 70 end   ;; pop objstr; push field lits[a]
+pub fn op_fset() -> int is return 71 end   ;; pop value; obj var a field lits[b]
+pub fn op_delete() -> int is return 72 end   ;; delete object var a
+pub fn op_mret() -> int is return 73 end   ;; store method return value into var a
+pub fn op_setret() -> int is return 74 end   ;; pop -> _ret
+pub fn op_ashell() -> int is return 75 end   ;; pop expr string; shell arithmetic; push result
+pub fn op_fielddef() -> int is return 76 end   ;; class field default: lits[a]=lits[b] type c
+pub fn op_loopmark() -> int is return 77 end   ;; unused
+pub fn op_exit() -> int is return 78 end   ;; pop code; exit
+pub fn op_sleepnop() -> int is return 79 end   ;; nop
+
+pub fn op_count() -> int is return 80 end
+
+pub fn op_name(op: int) -> string is
+    if op == 0 is return "halt" end
+    if op == 1 is return "lit" end
+    if op == 2 is return "var" end
+    if op == 3 is return "dyn" end
+    if op == 4 is return "cat" end
+    if op == 5 is return "print" end
+    if op == 6 is return "printlit" end
+    if op == 7 is return "set" end
+    if op == 8 is return "setlit" end
+    if op == 9 is return "jmp" end
+    if op == 10 is return "jifok" end
+    if op == 11 is return "jiferr" end
+    if op == 12 is return "jtrue" end
+    if op == 13 is return "jfalse" end
+    if op == 14 is return "exec" end
+    if op == 15 is return "execcap" end
+    if op == 16 is return "quick" end
+    if op == 17 is return "quickcap" end
+    if op == 18 is return "builtin" end
+    if op == 19 is return "builtincap" end
+    if op == 20 is return "nbeg" end
+    if op == 21 is return "nlit" end
+    if op == 22 is return "nvar" end
+    if op == 23 is return "nbin" end
+    if op == 24 is return "nneg" end
+    if op == 25 is return "nend" end
+    if op == 26 is return "nendf" end
+    if op == 27 is return "nfld" end
+    if op == 28 is return "call" end
+    if op == 29 is return "ret" end
+    if op == 30 is return "deffunc" end
+    if op == 31 is return "defarena" end
+    if op == 32 is return "callarena" end
+    if op == 33 is return "forinit" end
+    if op == 34 is return "fornext" end
+    if op == 35 is return "forend" end
+    if op == 36 is return "cond" end
+    if op == 37 is return "cmpv" end
+    if op == 38 is return "cmps" end
+    if op == 39 is return "whinit" end
+    if op == 40 is return "whtick" end
+    if op == 41 is return "whend" end
+    if op == 42 is return "swbeg" end
+    if op == 43 is return "swcmp" end
+    if op == 44 is return "swcmpi" end
+    if op == 45 is return "swend" end
+    if op == 46 is return "rptinit" end
+    if op == 47 is return "rptnext" end
+    if op == 48 is return "rptend" end
+    if op == 49 is return "export" end
+    if op == 50 is return "dep" end
+    if op == 51 is return "import" end
+    if op == 52 is return "fileimport" end
+    if op == 53 is return "dirimport" end
+    if op == 54 is return "gobeg" end
+    if op == 55 is return "goend" end
+    if op == 56 is return "chandecl" end
+    if op == 57 is return "chanop" end
+    if op == 58 is return "bg" end
+    if op == 59 is return "hsh" end
+    if op == 60 is return "hos" end
+    if op == 61 is return "extern" end
+    if op == 62 is return "externend" end
+    if op == 63 is return "varprint" end
+    if op == 64 is return "nop" end
+    if op == 65 is return "dyn_set" end
+    if op == 66 is return "classdef" end
+    if op == 67 is return "defmeth" end
+    if op == 68 is return "new" end
+    if op == 69 is return "mcall" end
+    if op == 70 is return "fget" end
+    if op == 71 is return "fset" end
+    if op == 72 is return "delete" end
+    if op == 73 is return "mret" end
+    if op == 74 is return "setret" end
+    if op == 75 is return "ashell" end
+    if op == 76 is return "fielddef" end
+    if op == 77 is return "loopmark" end
+    if op == 78 is return "exit" end
+    if op == 79 is return "sleepnop" end
+    return "?"
+end

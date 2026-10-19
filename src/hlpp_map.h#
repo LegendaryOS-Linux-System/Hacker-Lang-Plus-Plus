@@ -1,0 +1,135 @@
+pub struct SMap is
+    pub keys: [string]
+    pub vals: [int]
+    pub used: [int]
+    pub cap: int
+    pub count: int
+end
+
+pub fn new() -> SMap is
+    let c: int = 64
+    let mut k: [string] = []
+    let mut v: [int] = []
+    let mut u: [int] = []
+    let mut i: int = 0
+    while i < c is
+        k = array_push(k, "")
+        v = array_push(v, 0)
+        u = array_push(u, 0)
+        i += 1
+    end
+    return SMap { keys: k, vals: v, used: u, cap: c, count: 0 }
+end
+
+pub fn hash(s: string) -> int is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut h: int = 5381
+    let mask: int = 1073741823
+    let mut i: int = 0
+    while i < n is
+        h = ((h * 33) + bs[i]) % mask
+        i += 1
+    end
+    return h
+end
+
+;; slot index of key, or -1
+pub fn find(m: SMap, key: string) -> int is
+    let mut i: int = hash(key) % m.cap
+    let mut probes: int = 0
+    while probes < m.cap is
+        if m.used[i] == 0 is return 0 - 1 end
+        if m.keys[i] == key is return i end
+        i = (i + 1) % m.cap
+        probes += 1
+    end
+    return 0 - 1
+end
+
+pub fn get(m: SMap, key: string, dflt: int) -> int is
+    let i: int = find(m, key)
+    if i < 0 is return dflt end
+    return m.vals[i]
+end
+
+pub fn has(m: SMap, key: string) -> bool is
+    return find(m, key) >= 0
+end
+
+fn put_raw(m: SMap, key: string, val: int) is
+    let mut i: int = hash(key) % m.cap
+    while m.used[i] != 0 is
+        if m.keys[i] == key is
+            m.vals[i] = val
+            return
+        end
+        i = (i + 1) % m.cap
+    end
+    m.used[i] = 1
+    m.keys[i] = key
+    m.vals[i] = val
+    m.count += 1
+end
+
+fn grow(m: SMap) is
+    let old_keys: [string] = m.keys
+    let old_vals: [int] = m.vals
+    let old_used: [int] = m.used
+    let old_cap: int = m.cap
+    let nc: int = old_cap * 2
+    let mut k: [string] = []
+    let mut v: [int] = []
+    let mut u: [int] = []
+    let mut i: int = 0
+    while i < nc is
+        k = array_push(k, "")
+        v = array_push(v, 0)
+        u = array_push(u, 0)
+        i += 1
+    end
+    m.keys = k
+    m.vals = v
+    m.used = u
+    m.cap = nc
+    m.count = 0
+    let mut j: int = 0
+    while j < old_cap is
+        if old_used[j] != 0 is put_raw(m, old_keys[j], old_vals[j]) end
+        j += 1
+    end
+end
+
+pub fn put(m: SMap, key: string, val: int) is
+    if (m.count + 1) * 2 > m.cap is grow(m) end
+    put_raw(m, key, val)
+end
+
+;; remove by tombstone-free rebuild (rare operation)
+pub fn remove(m: SMap, key: string) is
+    let i: int = find(m, key)
+    if i < 0 is return end
+    let old_keys: [string] = m.keys
+    let old_vals: [int] = m.vals
+    let old_used: [int] = m.used
+    let cap: int = m.cap
+    let mut k: [string] = []
+    let mut v: [int] = []
+    let mut u: [int] = []
+    let mut z: int = 0
+    while z < cap is
+        k = array_push(k, "")
+        v = array_push(v, 0)
+        u = array_push(u, 0)
+        z += 1
+    end
+    m.keys = k
+    m.vals = v
+    m.used = u
+    m.count = 0
+    let mut j: int = 0
+    while j < cap is
+        if old_used[j] != 0 && old_keys[j] != key is put_raw(m, old_keys[j], old_vals[j]) end
+        j += 1
+    end
+end

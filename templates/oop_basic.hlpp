@@ -1,0 +1,19 @@
+using <gen 2026>
+:+ Animal def
+  % name = "?"
+  % sound = "..."
+  :. speak def
+    /> echo "@self.name says @self.sound"
+  done
+done
+:+ Dog < Animal def
+  % sound = "woof"
+  :. fetch def
+    /> echo "@self.name fetches"
+  done
+done
++> Dog rex
+% rex.name = "Rex"
+.> rex speak
+.> rex fetch
+:- rex

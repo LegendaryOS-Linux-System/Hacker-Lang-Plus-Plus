@@ -1,10 +1,12 @@
-[workspace]
--> members => hlpp
-
-[features]
--> jit-cranelift => off
--> native-ffi => off
-
 [package]
--> name => hlpp-workspace
+-> name => hlpp
 -> version => 0.1.0
+-> description => Hacker Lang++ — bytecode VM for Hacker Lang with OOP, bit.io and .hlib support (LegendaryOS)
+-> lang => h#
+
+[layout]
+-> src => src
+
+[dependencies]
+-> colors => newest
+-> nidus => newest

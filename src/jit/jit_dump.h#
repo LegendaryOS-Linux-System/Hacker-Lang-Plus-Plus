@@ -1,0 +1,70 @@
+mod hlpp_vm
+mod jit_ir
+
+fn pad(s: string, w: int) -> string is
+    let mut r: string = s
+    while string_len(r) < w is r = r + " " end
+    return r
+end
+
+fn reg(rg: jit_ir::Region, x: int) -> string is
+    if x < jit_ir::home_base() is
+        return "$" + to_string(x)
+    end
+    return "t" + to_string(x - jit_ir::home_base())
+end
+
+pub fn show_instr(rg: jit_ir::Region, i: int) -> string is
+    let b: int = i * 6
+    let op: int = rg.code[b]
+    let d: int = rg.code[b + 1]
+    let a: int = rg.code[b + 2]
+    let bb: int = rg.code[b + 3]
+    let c: int = rg.code[b + 4]
+    let e: int = rg.code[b + 5]
+    let nm: string = pad(jit_ir::op_name(op), 9)
+    if op == jit_ir::j_const() is return nm + reg(rg, d) + " = " + to_string(a) end
+    if op == jit_ir::j_mov() is return nm + reg(rg, d) + " = " + reg(rg, a) end
+    if (op >= 3 && op <= 7) is return nm + reg(rg, d) + " = " + reg(rg, a) + ", " + reg(rg, bb) + "   ;; guard x" + to_string(e) end
+    if op == jit_ir::j_neg() is return nm + reg(rg, d) + " = " + reg(rg, a) end
+    if (op >= 9 && op <= 13) is return nm + reg(rg, d) + " = " + reg(rg, a) + ", #" + to_string(bb) + "   ;; guard x" + to_string(e) end
+    if op == jit_ir::j_jmp() is return nm + "-> " + to_string(a) end
+    if op >= 15 && op <= 20 is return nm + reg(rg, a) + ", " + reg(rg, bb) + " -> " + to_string(c) end
+    if op >= 21 && op <= 26 is return nm + reg(rg, a) + ", #" + to_string(bb) + " -> " + to_string(c) end
+    if op == jit_ir::j_winit() is return nm + "w" + to_string(d) end
+    if op == jit_ir::j_tick() is return nm + "w" + to_string(d) + "   ;; guard x" + to_string(e) end
+    if op == jit_ir::j_rinit() is return nm + "r" + to_string(d) + " = " + to_string(a) end
+    if op == jit_ir::j_rnext() is return nm + "r" + to_string(d) + " -> " + to_string(a) end
+    if op == jit_ir::j_printreg() is return nm + reg(rg, a) end
+    if op == jit_ir::j_printlit() is return nm + "lit#" + to_string(a) end
+    if op == jit_ir::j_printfmt() is return nm + "fmt#" + to_string(a) end
+    if op == jit_ir::j_printvar() is return nm + "var#" + to_string(a) end
+    if op == jit_ir::j_jlxok() || op == jit_ir::j_jlxerr() is return nm + "-> " + to_string(a) end
+    if op == jit_ir::j_exit() is return nm + "x" + to_string(e) end
+    return nm
+end
+
+pub fn dump(vm: hlpp_vm::VM, rg: jit_ir::Region) -> string is
+    let mut out: string = ""
+    let mut h: int = 0
+    while h < rg.nhome is
+        let slot: int = rg.home_slot[h]
+        let mut flags: string = ""
+        if rg.home_read[h] == 1 is flags = flags + " read" end
+        if rg.home_dirty[h] == 1 is flags = flags + " write" end
+        out = out + "  $" + to_string(h) + " = @" + vm.p.names[slot] + " (" + flags + " )\n"
+        h += 1
+    end
+    let mut i: int = 0
+    while i < rg.n is
+        out = out + "  " + pad(to_string(i), 4) + show_instr(rg, i) + "\n"
+        i += 1
+    end
+    let mut x: int = 0
+    while x < rg.nex is
+        let b: int = x * 6
+        out = out + "  x" + to_string(x) + ": resume pc " + to_string(rg.ex[b]) + " (while " + to_string(rg.ex[b + 1]) + ", repeat " + to_string(rg.ex[b + 2]) + ", inline frames " + to_string(rg.ex[b + 5]) + ")\n"
+        x += 1
+    end
+    return out
+end

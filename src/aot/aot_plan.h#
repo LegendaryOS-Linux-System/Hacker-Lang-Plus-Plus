@@ -1,0 +1,63 @@
+pub struct Stage is
+    pub id: string
+    pub state: int
+    pub title: string
+    pub detail: string
+end
+
+fn st(id: string, state: int, title: string, detail: string) -> Stage is
+    return Stage { id: id, state: state, title: title, detail: detail }
+end
+
+pub fn stages() -> [Stage] is
+    let mut s: [Stage] = []
+    s = array_push(s, st("image", 2, "portable HLPB image",
+        "compile once, run later without the front end (aot_image); `hlpp aot compile|run|inspect`"))
+    s = array_push(s, st("verify", 2, "image verification",
+        "checksum + structural checks on load; round-trip is tested by tests/aot.hlpp"))
+    s = array_push(s, st("lower", 1, "bytecode -> typed IR for whole programs",
+        "reuse src/jit/jit_ir (integer registers, guards); extend from loop regions to whole functions with explicit string/object lowering"))
+    s = array_push(s, st("clif", 1, "IR -> Cranelift CLIF (object mode)",
+        "same CLIF emitter as the JIT tier 2, but through cranelift-object instead of cranelift-jit; driven by the official .hlib API"))
+    s = array_push(s, st("rt", 0, "runtime library (libhlpp_rt)",
+        "strings, objects pool, arenas, process spawning and the numeric engine as a static library written in H#"))
+    s = array_push(s, st("link", 0, "linking and packaging",
+        "native executable per target (Linux / Windows / macOS) without an interpreter on the machine"))
+    s = array_push(s, st("pgo", 0, "profile-guided layout",
+        "use the JIT hot-loop statistics (hlpp jit --stats) to decide which functions get native code"))
+    return s
+end
+
+pub fn state_name(n: int) -> string is
+    if n == 2 is return "done" end
+    if n == 1 is return "designed" end
+    return "open"
+end
+
+pub fn report() -> string is
+    let mut out: string = "stages of the ahead-of-time backend:\n"
+    let ss: [Stage] = stages()
+    let mut i: int = 0
+    while i < array_len(ss) is
+        let x: Stage = ss[i]
+        let mut name: string = x.id
+        while string_len(name) < 8 is name = name + " " end
+        let mut sn: string = state_name(x.state)
+        while string_len(sn) < 9 is sn = sn + " " end
+        out = out + "  " + name + sn + x.title + "\n"
+        out = out + "                     " + x.detail + "\n"
+        i += 1
+    end
+    return out
+end
+
+;; true when every stage needed to emit a native executable is implemented
+pub fn native_ready() -> bool is
+    let ss: [Stage] = stages()
+    let mut i: int = 0
+    while i < array_len(ss) is
+        if ss[i].state < 2 && ss[i].id != "pgo" is return false end
+        i += 1
+    end
+    return true
+end

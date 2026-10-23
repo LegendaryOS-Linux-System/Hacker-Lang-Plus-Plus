@@ -1,0 +1,96 @@
+mod jit_ir
+
+fn thread(rg: jit_ir::Region, t0: int) -> int is
+    let mut t: int = t0
+    let mut hops: int = 0
+    while hops < 8 && t < rg.n && rg.code[t * 6] == jit_ir::j_jmp() is
+        t = rg.code[t * 6 + 2]
+        hops += 1
+    end
+    return t
+end
+
+fn thread_jumps(rg: jit_ir::Region) is
+    let mut i: int = 0
+    while i < rg.n is
+        let op: int = rg.code[i * 6]
+        if jit_ir::is_jump(op) is
+            let f: int = i * 6 + jit_ir::target_field(op)
+            rg.code[f] = thread(rg, rg.code[f])
+        end
+        i += 1
+    end
+end
+
+;; mark instructions that are jump targets
+fn targets(rg: jit_ir::Region) -> [int] is
+    let mut t: [int] = []
+    let mut i: int = 0
+    while i < rg.n is
+        t = array_push(t, 0)
+        i += 1
+    end
+    let mut j: int = 0
+    while j < rg.n is
+        let op: int = rg.code[j * 6]
+        if jit_ir::is_jump(op) is
+            let tg: int = rg.code[j * 6 + jit_ir::target_field(op)]
+            if tg >= 0 && tg < rg.n is t[tg] = 1 end
+        end
+        j += 1
+    end
+    return t
+end
+
+fn compact(rg: jit_ir::Region) is
+    let tg: [int] = targets(rg)
+    let mut keep: [int] = []
+    let mut i: int = 0
+    while i < rg.n is
+        let b: int = i * 6
+        let op: int = rg.code[b]
+        let mut k: int = 1
+        if op == jit_ir::j_nop() && rg.code[b + 3] != 1 is k = 0 end
+        ;; adjacent setx: the second one is redundant unless something jumps onto it
+        if op == jit_ir::j_setx() && i > 0 && tg[i] == 0 is
+            if rg.code[(i - 1) * 6] == jit_ir::j_setx() is k = 0 end
+        end
+        ;; jmp to the very next instruction
+        if op == jit_ir::j_jmp() && rg.code[b + 2] == i + 1 is k = 0 end
+        keep = array_push(keep, k)
+        i += 1
+    end
+    ;; new index of every old instruction (a removed one maps to the next kept one)
+    let mut newidx: [int] = []
+    let mut cnt: int = 0
+    let mut j: int = 0
+    while j < rg.n is
+        newidx = array_push(newidx, cnt)
+        if keep[j] == 1 is cnt += 1 end
+        j += 1
+    end
+    newidx = array_push(newidx, cnt)
+    let mut out: [int] = []
+    let mut m: int = 0
+    while m < rg.n is
+        if keep[m] == 1 is
+            let b2: int = m * 6
+            let op2: int = rg.code[b2]
+            let mut f: int = 0
+            while f < 6 is
+                let mut v: int = rg.code[b2 + f]
+                if jit_ir::is_jump(op2) && f == jit_ir::target_field(op2) is v = newidx[v] end
+                out = array_push(out, v)
+                f += 1
+            end
+        end
+        m += 1
+    end
+    rg.code = out
+    rg.n = cnt
+end
+
+pub fn optimize(rg: jit_ir::Region) is
+    thread_jumps(rg)
+    compact(rg)
+end

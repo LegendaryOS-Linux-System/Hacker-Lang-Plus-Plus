@@ -1,0 +1,204 @@
+pub fn home_base() -> int is return 48 end          ;; registers below this are variable homes
+pub fn isz() -> int is return 6 end                  ;; ints per instruction
+
+;; ── opcodes (single source of truth: tools/gen_jit_ops.py) ──────────────────
+pub fn j_nop() -> int is return 0 end
+pub fn j_const() -> int is return 1 end      ;; d = a ; vt(d) = b
+pub fn j_mov() -> int is return 2 end        ;; d = a ; vt(d) = b
+pub fn j_add() -> int is return 3 end        ;; d = a + b   (guard e)
+pub fn j_sub() -> int is return 4 end
+pub fn j_mul() -> int is return 5 end
+pub fn j_div() -> int is return 6 end        ;; exact-or-deopt, x/0 = 0
+pub fn j_rem() -> int is return 7 end        ;; x%0 = 0
+pub fn j_neg() -> int is return 8 end
+pub fn j_addi() -> int is return 9 end       ;; d = a + imm(b)
+pub fn j_subi() -> int is return 10 end
+pub fn j_muli() -> int is return 11 end
+pub fn j_divi() -> int is return 12 end
+pub fn j_remi() -> int is return 13 end
+pub fn j_jmp() -> int is return 14 end       ;; goto a
+pub fn j_jeq() -> int is return 15 end       ;; if r[a] == r[b] goto c      (15..20 follow cmpv op order)
+pub fn j_jne() -> int is return 16 end
+pub fn j_jge() -> int is return 17 end
+pub fn j_jle() -> int is return 18 end
+pub fn j_jgt() -> int is return 19 end
+pub fn j_jlt() -> int is return 20 end
+pub fn j_jeqi() -> int is return 21 end      ;; if r[a] == imm(b) goto c     (21..26)
+pub fn j_jnei() -> int is return 22 end
+pub fn j_jgei() -> int is return 23 end
+pub fn j_jlei() -> int is return 24 end
+pub fn j_jgti() -> int is return 25 end
+pub fn j_jlti() -> int is return 26 end
+pub fn j_winit() -> int is return 27 end     ;; while counter d = 0
+pub fn j_tick() -> int is return 28 end      ;; while counter d: guard limit, then ++
+pub fn j_rinit() -> int is return 29 end     ;; repeat counter d = a
+pub fn j_rnext() -> int is return 30 end     ;; repeat counter d: if <= 0 goto a else --
+pub fn j_printreg() -> int is return 31 end  ;; print r[a]
+pub fn j_printlit() -> int is return 32 end  ;; print lits[a]
+pub fn j_printfmt() -> int is return 33 end  ;; print format a
+pub fn j_setx() -> int is return 34 end      ;; last_exit = 0
+pub fn j_jlxok() -> int is return 35 end     ;; if last_exit == 0 goto a
+pub fn j_jlxerr() -> int is return 36 end    ;; if last_exit != 0 goto a
+pub fn j_exit() -> int is return 37 end      ;; leave the region through exit e
+pub fn j_printvar() -> int is return 38 end  ;; print VM variable (slot a)
+pub fn j_count() -> int is return 39 end
+
+pub fn op_name(op: int) -> string is
+    if op == 0 is return "nop" end
+    if op == 1 is return "const" end
+    if op == 2 is return "mov" end
+    if op == 3 is return "add" end
+    if op == 4 is return "sub" end
+    if op == 5 is return "mul" end
+    if op == 6 is return "div" end
+    if op == 7 is return "rem" end
+    if op == 8 is return "neg" end
+    if op == 9 is return "addi" end
+    if op == 10 is return "subi" end
+    if op == 11 is return "muli" end
+    if op == 12 is return "divi" end
+    if op == 13 is return "remi" end
+    if op == 14 is return "jmp" end
+    if op == 15 is return "jeq" end
+    if op == 16 is return "jne" end
+    if op == 17 is return "jge" end
+    if op == 18 is return "jle" end
+    if op == 19 is return "jgt" end
+    if op == 20 is return "jlt" end
+    if op == 21 is return "jeqi" end
+    if op == 22 is return "jnei" end
+    if op == 23 is return "jgei" end
+    if op == 24 is return "jlei" end
+    if op == 25 is return "jgti" end
+    if op == 26 is return "jlti" end
+    if op == 27 is return "winit" end
+    if op == 28 is return "tick" end
+    if op == 29 is return "rinit" end
+    if op == 30 is return "rnext" end
+    if op == 31 is return "printreg" end
+    if op == 32 is return "printlit" end
+    if op == 33 is return "printfmt" end
+    if op == 34 is return "setx" end
+    if op == 35 is return "jlxok" end
+    if op == 36 is return "jlxerr" end
+    if op == 37 is return "exit" end
+    if op == 38 is return "printvar" end
+    return "?"
+end
+
+;; ── limits shared with the tier-0 numeric fast path (hlpp_exec::op_nbin) ────
+pub fn lim_add() -> int is return 1000000000000000000 end
+pub fn lim_mul() -> int is return 3000000000 end
+pub fn while_limit() -> int is return 1000000 end
+
+;; ── region ──────────────────────────────────────────────────────────────────
+pub struct Region is
+    pub entry_pc: int
+    pub kind: int                 ;; 1 = while loop (entry at whtick), 2 = repeat loop (entry at rptnext)
+    pub code: [int]
+    pub n: int                    ;; instruction count
+    pub nhome: int
+    pub home_slot: [int]
+    pub home_read: [int]          ;; 1 = value is read in the region => guarded + loaded at entry
+    pub home_dirty: [int]         ;; 1 = assigned in the region => flushed at exits
+    pub ex: [int]                 ;; 6 ints per exit: resume_pc wd rd flag chain_start chain_len
+    pub nex: int
+    pub chain: [int]              ;; return pcs of inlined call frames, outermost first
+    pub fmt_start: [int]          ;; print formats: pieces [start, start+cnt) in pk/pv
+    pub fmt_cnt: [int]
+    pub pk: [int]                 ;; piece kind: 0 literal (pv = lit idx), 1 home reg (pv = reg), 2 VM variable (pv = slot)
+    pub pv: [int]
+    pub epoch: int
+    pub uses_calls: bool
+    pub ntemps: int
+    pub regs: [int]
+    pub rt: [int]
+    pub cw: [int]
+    pub cr: [int]
+    pub state: int                ;; 0 new, 1 ready, 2 rejected, 3 disabled
+    pub why: string
+    pub entries: int
+    pub deopts: int
+    pub guard_fails: int
+    pub iters: int
+    pub native: int               ;; native handle (0 = none)
+    pub native_state: int         ;; 0 untried, 1 ok, 2 unavailable/failed
+    pub src_lines: int
+end
+
+pub fn new_region(entry_pc: int, kind: int) -> Region is
+    return Region { entry_pc: entry_pc, kind: kind, code: [], n: 0, nhome: 0, home_slot: [], home_read: [], home_dirty: [],
+                    ex: [], nex: 0, chain: [], fmt_start: [], fmt_cnt: [], pk: [], pv: [], epoch: 0, uses_calls: false,
+                    ntemps: 0, regs: [], rt: [], cw: [], cr: [], state: 0, why: "", entries: 0, deopts: 0, guard_fails: 0,
+                    iters: 0, native: 0, native_state: 0, src_lines: 0 }
+end
+
+pub fn emit(rg: Region, op: int, d: int, a: int, b: int, c: int, e: int) -> int is
+    let at: int = rg.n
+    rg.code = array_push(rg.code, op)
+    rg.code = array_push(rg.code, d)
+    rg.code = array_push(rg.code, a)
+    rg.code = array_push(rg.code, b)
+    rg.code = array_push(rg.code, c)
+    rg.code = array_push(rg.code, e)
+    rg.n += 1
+    return at
+end
+
+;; find-or-add an exit descriptor (dedup on pc/wd/rd/flag/chain)
+pub fn add_exit(rg: Region, pc: int, wd: int, rd: int, flag: int, chain: [int]) -> int is
+    let mut i: int = 0
+    while i < rg.nex is
+        let b: int = i * 6
+        if rg.ex[b] == pc && rg.ex[b + 1] == wd && rg.ex[b + 2] == rd && rg.ex[b + 3] == flag && rg.ex[b + 5] == array_len(chain) is
+            let mut same: bool = true
+            let mut k: int = 0
+            while k < array_len(chain) is
+                if rg.chain[rg.ex[b + 4] + k] != chain[k] is same = false end
+                k += 1
+            end
+            if same is return i end
+        end
+        i += 1
+    end
+    let cs: int = array_len(rg.chain)
+    let mut k2: int = 0
+    while k2 < array_len(chain) is
+        rg.chain = array_push(rg.chain, chain[k2])
+        k2 += 1
+    end
+    rg.ex = array_push(rg.ex, pc)
+    rg.ex = array_push(rg.ex, wd)
+    rg.ex = array_push(rg.ex, rd)
+    rg.ex = array_push(rg.ex, flag)
+    rg.ex = array_push(rg.ex, cs)
+    rg.ex = array_push(rg.ex, array_len(chain))
+    rg.nex += 1
+    return rg.nex - 1
+end
+
+pub fn add_fmt(rg: Region, kinds: [int], vals: [int]) -> int is
+    rg.fmt_start = array_push(rg.fmt_start, array_len(rg.pk))
+    rg.fmt_cnt = array_push(rg.fmt_cnt, array_len(kinds))
+    let mut i: int = 0
+    while i < array_len(kinds) is
+        rg.pk = array_push(rg.pk, kinds[i])
+        rg.pv = array_push(rg.pv, vals[i])
+        i += 1
+    end
+    return array_len(rg.fmt_start) - 1
+end
+
+pub fn is_jump(op: int) -> bool is
+    return op == 14 || (op >= 15 && op <= 26) || op == 30 || op == 35 || op == 36
+end
+
+;; which field of a jump instruction holds the target IR index
+pub fn target_field(op: int) -> int is
+    if op == 14 || op == 30 || op == 35 || op == 36 is return 2 end
+    return 4
+end
+
+pub fn is_guarded(op: int) -> bool is
+    return (op >= 3 && op <= 7) || (op >= 9 && op <= 13) || op == 28
+end

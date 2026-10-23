@@ -1,1 +1,83 @@
+mod syntax_core
+mod syntax_lexical
+mod syntax_data
+mod syntax_commands
+mod syntax_flow
+mod syntax_collections
+mod syntax_funcs
+mod syntax_oop
+mod syntax_modules
+mod syntax_check
+mod syntax_doc
+mod hlpp_sys
 
+;; the registry with every rule, in presentation order
+pub fn build() -> syntax_core::Registry is
+    let r: syntax_core::Registry = syntax_core::new_registry()
+    syntax_lexical::add_rules(r)
+    syntax_data::add_rules(r)
+    syntax_commands::add_rules(r)
+    syntax_flow::add_rules(r)
+    syntax_collections::add_rules(r)
+    syntax_funcs::add_rules(r)
+    syntax_oop::add_rules(r)
+    syntax_modules::add_rules(r)
+    return r
+end
+
+pub fn rule_count() -> int is
+    return array_len(build().rules)
+end
+
+;; `hlpp syntax ...`; returns the process exit code
+pub fn cli(args: [string], argv0: string) -> int is
+    let r: syntax_core::Registry = build()
+    let mut sub: string = "list"
+    if array_len(args) > 0 is sub = args[0] end
+    if sub == "list" is
+        let mut g: string = ""
+        if array_len(args) > 1 is g = args[1] end
+        hlpp_sys::out(syntax_doc::list(r, g))
+        return 0
+    end
+    if sub == "grammar" is
+        hlpp_sys::out(syntax_doc::grammar(r))
+        return 0
+    end
+    if sub == "markdown" is
+        hlpp_sys::out(syntax_doc::markdown(r))
+        return 0
+    end
+    if sub == "show" || sub == "where" is
+        if array_len(args) < 2 is
+            hlpp_sys::err("syntax " + sub + " needs a rule id (see `hlpp syntax list`)\n")
+            return 2
+        end
+        let at: int = syntax_core::find(r, args[1])
+        if at < 0 is
+            hlpp_sys::err("unknown rule '" + args[1] + "'\n")
+            return 1
+        end
+        if sub == "where" is
+            hlpp_sys::outln("src/syntax/" + r.rules[at].src + ".h#")
+        else is
+            hlpp_sys::out(syntax_doc::show(r.rules[at]))
+        end
+        return 0
+    end
+    if sub == "check" is
+        let mut exe: string = syntax_check::self_exe(argv0)
+        if array_len(args) > 1 && args[1] == "--compile-only" is exe = "" end
+        let rep: syntax_check::Report = syntax_check::run_all(r, exe)
+        let mut i: int = 0
+        while i < array_len(rep.lines) is
+            hlpp_sys::outln(rep.lines[i])
+            i += 1
+        end
+        hlpp_sys::outln("syntax: " + to_string(array_len(r.rules)) + " rules, " + to_string(rep.passed) + " checks passed, " + to_string(rep.failed) + " failed, " + to_string(rep.ran) + " programs executed")
+        if rep.failed > 0 is return 1 end
+        return 0
+    end
+    hlpp_sys::err("usage: hlpp syntax [list [group] | show <id> | where <id> | grammar | markdown | check [--compile-only]]\n")
+    return 2
+end

@@ -1,0 +1,354 @@
+mod hlpp_text
+mod hlpp_sys
+mod hlpp_vm
+mod jit_ir
+
+;; same rule as hlpp_exec::int_kind for variables: value is a canonical decimal integer
+fn is_int_slot(vm: hlpp_vm::VM, x: int) -> bool is
+    if vm.vt[x] == 0 is return false end
+    let k: int = vm.nk[x]
+    if k == 1 || k == 2 is return true end
+    if k == 4 is return false end
+    let s: string = vm.vals[x]
+    let ip: hlpp_text::IntParse = hlpp_text::parse_i(s)
+    if ip.ok is
+        let v: int = ip.v
+        if to_string(v) == s is
+            vm.ni[x] = v
+            vm.nk[x] = 1
+            return true
+        end
+    end
+    vm.nk[x] = 4
+    return false
+end
+
+fn grow_to(a: [int], n: int) -> [int] is
+    let mut r: [int] = a
+    while array_len(r) <= n is r = array_push(r, 0) end
+    return r
+end
+
+pub fn fmt_text(vm: hlpp_vm::VM, rg: jit_ir::Region, r: [int], f: int) -> string is
+    let st: int = rg.fmt_start[f]
+    let cnt: int = rg.fmt_cnt[f]
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < cnt is
+        let k: int = rg.pk[st + i]
+        let v: int = rg.pv[st + i]
+        if k == 0 is
+            out = out + vm.p.lits[v]
+        else if k == 1 is
+            out = out + to_string(r[v])
+        else is
+            out = out + hlpp_vm::get_var(vm, v)
+        end
+        i += 1
+    end
+    return out
+end
+
+;; Leave the region through exit descriptor `xi`; returns the pc where tier 0 resumes.
+pub fn leave(vm: hlpp_vm::VM, rg: jit_ir::Region, r: [int], rt: [int], cw: [int], cr: [int], lx: int, xi: int, wsp0: int, rcsp0: int) -> int is
+    let b: int = xi * 6
+    let resume: int = rg.ex[b]
+    let wd: int = rg.ex[b + 1]
+    let rd: int = rg.ex[b + 2]
+    let flag: int = rg.ex[b + 3]
+    let cs: int = rg.ex[b + 4]
+    let cl: int = rg.ex[b + 5]
+    let mut h: int = 0
+    while h < rg.nhome is
+        if rg.home_dirty[h] == 1 && rt[h] != 0 is
+            let slot: int = rg.home_slot[h]
+            vm.ni[slot] = r[h]
+            vm.nk[slot] = 2
+            vm.vt[slot] = rt[h]
+        end
+        h += 1
+    end
+    let mut wbase: int = wsp0
+    if rg.kind == 1 is wbase = wsp0 - 1 end
+    let mut k: int = 0
+    while k < wd is
+        vm.wcnt = grow_to(vm.wcnt, wbase + k)
+        vm.wcnt[wbase + k] = cw[k]
+        k += 1
+    end
+    vm.wsp = wbase + wd
+    let mut rbase: int = rcsp0
+    if rg.kind == 2 is rbase = rcsp0 - 1 end
+    let mut k2: int = 0
+    while k2 < rd is
+        vm.rcnt = grow_to(vm.rcnt, rbase + k2)
+        vm.rcnt[rbase + k2] = cr[k2]
+        k2 += 1
+    end
+    vm.rcsp = rbase + rd
+    vm.last_exit = lx
+    if flag == 1 is vm.flag = true end
+    if flag == 0 is vm.flag = false end
+    if flag == 0 - 2 is rg.deopts += 1 end
+    let mut c: int = 0
+    while c < cl is
+        hlpp_vm::frame_push(vm, rg.chain[cs + c], 0, "", vm.obj_created)
+        c += 1
+    end
+    vm.pc = resume
+    return resume
+end
+
+;; Guard + load.  Returns false (VM untouched) when a variable the region reads is not an integer.
+pub fn enter_ok(vm: hlpp_vm::VM, rg: jit_ir::Region) -> bool is
+    if rg.kind == 1 && vm.wsp < 1 is return false end
+    if rg.kind == 2 && vm.rcsp < 1 is return false end
+    let mut h: int = 0
+    while h < rg.nhome is
+        if rg.home_read[h] == 1 && !is_int_slot(vm, rg.home_slot[h]) is return false end
+        h += 1
+    end
+    return true
+end
+
+pub fn run(vm: hlpp_vm::VM, rg: jit_ir::Region) -> int is
+    let o_nop: int = 0
+    let o_const: int = 1
+    let o_mov: int = 2
+    let o_add: int = 3
+    let o_sub: int = 4
+    let o_mul: int = 5
+    let o_div: int = 6
+    let o_rem: int = 7
+    let o_neg: int = 8
+    let o_addi: int = 9
+    let o_subi: int = 10
+    let o_muli: int = 11
+    let o_divi: int = 12
+    let o_remi: int = 13
+    let o_jmp: int = 14
+    let o_jeq: int = 15
+    let o_jne: int = 16
+    let o_jge: int = 17
+    let o_jle: int = 18
+    let o_jgt: int = 19
+    let o_jlt: int = 20
+    let o_jeqi: int = 21
+    let o_jnei: int = 22
+    let o_jgei: int = 23
+    let o_jlei: int = 24
+    let o_jgti: int = 25
+    let o_jlti: int = 26
+    let o_winit: int = 27
+    let o_tick: int = 28
+    let o_rinit: int = 29
+    let o_rnext: int = 30
+    let o_printreg: int = 31
+    let o_printlit: int = 32
+    let o_printfmt: int = 33
+    let o_setx: int = 34
+    let o_jlxok: int = 35
+    let o_jlxerr: int = 36
+    let o_exit: int = 37
+    let o_printvar: int = 38
+    let la: int = jit_ir::lim_add()
+    let nla: int = 0 - la
+    let lm: int = jit_ir::lim_mul()
+    let nlm: int = 0 - lm
+    let wl: int = jit_ir::while_limit()
+    let code: [int] = rg.code
+    let mut r: [int] = rg.regs
+    let mut rt: [int] = rg.rt
+    let mut cw: [int] = rg.cw
+    let mut cr: [int] = rg.cr
+    let wsp0: int = vm.wsp
+    let rcsp0: int = vm.rcsp
+    ;; load
+    let nh: int = rg.nhome
+    let mut h: int = 0
+    while h < nh is
+        let slot: int = rg.home_slot[h]
+        if rg.home_read[h] == 1 is
+            r[h] = vm.ni[slot]
+            rt[h] = vm.vt[slot]
+        else is
+            r[h] = 0
+            rt[h] = 0
+        end
+        h += 1
+    end
+    if rg.kind == 1 is cw[0] = vm.wcnt[wsp0 - 1] end
+    if rg.kind == 2 is cr[0] = vm.rcnt[rcsp0 - 1] end
+    let mut lx: int = vm.last_exit
+    let mut ip: int = 0
+    let mut xi: int = 0 - 1
+    let mut ticks: int = 0
+    while xi < 0 is
+        let b: int = ip * 6
+        let op: int = code[b]
+        if op == o_tick is
+            let c: int = cw[code[b + 1]]
+            if c >= wl is
+                xi = code[b + 5]
+            else is
+                cw[code[b + 1]] = c + 1
+                ticks += 1
+                ip += 1
+            end
+        else if op >= o_jeqi && op <= o_jlti is
+            let x: int = r[code[b + 2]]
+            let y: int = code[b + 3]
+            let mut t: bool = false
+            if op == o_jeqi is t = x == y
+            else if op == o_jnei is t = x != y
+            else if op == o_jgei is t = x >= y
+            else if op == o_jlei is t = x <= y
+            else if op == o_jgti is t = x > y
+            else is t = x < y end
+            if t is ip = code[b + 4] else is ip += 1 end
+        else if op >= o_jeq && op <= o_jlt is
+            let x: int = r[code[b + 2]]
+            let y: int = r[code[b + 3]]
+            let mut t: bool = false
+            if op == o_jeq is t = x == y
+            else if op == o_jne is t = x != y
+            else if op == o_jge is t = x >= y
+            else if op == o_jle is t = x <= y
+            else if op == o_jgt is t = x > y
+            else is t = x < y end
+            if t is ip = code[b + 4] else is ip += 1 end
+        else if op == o_addi is
+            let x: int = r[code[b + 2]]
+            if x < la && x > nla is
+                r[code[b + 1]] = x + code[b + 3]
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_subi is
+            let x: int = r[code[b + 2]]
+            if x < la && x > nla is
+                r[code[b + 1]] = x - code[b + 3]
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_muli is
+            let x: int = r[code[b + 2]]
+            if x < lm && x > nlm is
+                r[code[b + 1]] = x * code[b + 3]
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_add is
+            let x: int = r[code[b + 2]]
+            let y: int = r[code[b + 3]]
+            if x < la && x > nla && y < la && y > nla is
+                r[code[b + 1]] = x + y
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_sub is
+            let x: int = r[code[b + 2]]
+            let y: int = r[code[b + 3]]
+            if x < la && x > nla && y < la && y > nla is
+                r[code[b + 1]] = x - y
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_mul is
+            let x: int = r[code[b + 2]]
+            let y: int = r[code[b + 3]]
+            if x < lm && x > nlm && y < lm && y > nlm is
+                r[code[b + 1]] = x * y
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_div || op == o_divi is
+            let x: int = r[code[b + 2]]
+            let mut y: int = code[b + 3]
+            if op == o_div is y = r[code[b + 3]] end
+            if y == 0 is
+                r[code[b + 1]] = 0
+                ip += 1
+            else if x % y == 0 is
+                r[code[b + 1]] = x / y
+                ip += 1
+            else is
+                xi = code[b + 5]
+            end
+        else if op == o_rem || op == o_remi is
+            let x: int = r[code[b + 2]]
+            let mut y: int = code[b + 3]
+            if op == o_rem is y = r[code[b + 3]] end
+            if y == 0 is
+                r[code[b + 1]] = 0
+            else is
+                r[code[b + 1]] = x % y
+            end
+            ip += 1
+        else if op == o_const is
+            let d: int = code[b + 1]
+            r[d] = code[b + 2]
+            if d < 48 is rt[d] = code[b + 3] end
+            ip += 1
+        else if op == o_mov is
+            let d: int = code[b + 1]
+            r[d] = r[code[b + 2]]
+            if d < 48 is rt[d] = code[b + 3] end
+            ip += 1
+        else if op == o_neg is
+            r[code[b + 1]] = 0 - r[code[b + 2]]
+            ip += 1
+        else if op == o_jmp is
+            ip = code[b + 2]
+        else if op == o_setx is
+            lx = 0
+            ip += 1
+        else if op == o_printreg is
+            hlpp_sys::outln(to_string(r[code[b + 2]]))
+            ip += 1
+        else if op == o_printfmt is
+            hlpp_sys::outln(fmt_text(vm, rg, r, code[b + 2]))
+            ip += 1
+        else if op == o_printlit is
+            hlpp_sys::outln(vm.p.lits[code[b + 2]])
+            ip += 1
+        else if op == o_printvar is
+            hlpp_sys::outln(hlpp_vm::get_var(vm, code[b + 2]))
+            ip += 1
+        else if op == o_winit is
+            cw[code[b + 1]] = 0
+            ip += 1
+        else if op == o_rinit is
+            cr[code[b + 1]] = code[b + 2]
+            ip += 1
+        else if op == o_rnext is
+            let c2: int = cr[code[b + 1]]
+            if c2 <= 0 is
+                ip = code[b + 2]
+            else is
+                cr[code[b + 1]] = c2 - 1
+                ip += 1
+            end
+        else if op == o_jlxok is
+            if lx == 0 is ip = code[b + 2] else is ip += 1 end
+        else if op == o_jlxerr is
+            if lx != 0 is ip = code[b + 2] else is ip += 1 end
+        else if op == o_exit is
+            xi = code[b + 5]
+        else if op == o_nop is
+            let d: int = code[b + 1]
+            if d < 48 && code[b + 3] == 1 is rt[d] = 1 end
+            ip += 1
+        else is
+            ip += 1
+        end
+    end
+    rg.iters += ticks
+    return leave(vm, rg, r, rt, cw, cr, lx, xi, wsp0, rcsp0)
+end

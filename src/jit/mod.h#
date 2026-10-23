@@ -1,1 +1,175 @@
+mod hlpp_sys
+mod hlpp_ops
+mod hlpp_map
+mod hlpp_prog
+mod hlpp_vm
+mod jit_ir
+mod jit_front
+mod jit_opt
+mod jit_exec
+mod jit_dump
+mod jit_clif
+mod jit_native
 
+pub fn available() -> bool is return true end
+
+pub fn default_threshold() -> int is return 40 end
+
+pub fn status() -> string is
+    let mut s: string = "backend jit (domyślny): tier-0 bytecode VM + tier-1 region JIT (IR, deoptymalizacja)"
+    if jit_native::available() is
+        s = s + " + tier-2 native (Cranelift)"
+    else is
+        s = s + "; tier-2 native: niedostępny (" + jit_native::reason() + ")"
+    end
+    return s
+end
+
+;; read HLPP_JIT (0/off/false disables) and HLPP_JIT_THRESHOLD
+pub fn init(vm: hlpp_vm::VM) is
+    let e: string = string_lower(hlpp_sys::getenv("HLPP_JIT"))
+    if e == "0" || e == "off" || e == "false" || e == "no" is vm.jit_on = false end
+    let t: string = hlpp_sys::getenv("HLPP_JIT_THRESHOLD")
+    if string_len(t) > 0 is
+        let n: int = hlpp_text_int(t, vm.jit_thresh)
+        if n > 0 is vm.jit_thresh = n end
+    end
+end
+
+fn hlpp_text_int(s: string, d: int) -> int is
+    let mut v: int = 0
+    let bs: [int] = string_to_bytes(string_trim(s))
+    if array_len(bs) == 0 is return d end
+    let mut i: int = 0
+    while i < array_len(bs) is
+        if bs[i] < 48 || bs[i] > 57 is return d end
+        v = v * 10 + (bs[i] - 48)
+        i += 1
+    end
+    return v
+end
+
+fn compile(vm: hlpp_vm::VM, pc: int, kind: int) -> jit_ir::Region is
+    let rg: jit_ir::Region = jit_front::build(vm, pc, kind)
+    if rg.state == 1 is jit_opt::optimize(rg) end
+    return rg
+end
+
+;; Called by the dispatch loop when it reaches a loop header.  true = the region ran and vm.pc was set.
+pub fn at_header(vm: hlpp_vm::VM, pc: int, kind: int) -> bool is
+    let st: int = vm.jit_state[pc]
+    if st >= 2 is return false end
+    if st == 0 is
+        let h: int = vm.hot[pc] + 1
+        vm.hot[pc] = h
+        if h < vm.jit_thresh is return false end
+        let rg0: jit_ir::Region = compile(vm, pc, kind)
+        vm.jit_regions = array_push(vm.jit_regions, rg0)
+        vm.jit_idx[pc] = array_len(vm.jit_regions) - 1
+        vm.jit_compiles += 1
+        if rg0.state != 1 is
+            vm.jit_state[pc] = 2
+            vm.jit_rejects += 1
+            return false
+        end
+        vm.jit_state[pc] = 1
+    end
+    let ri: int = vm.jit_idx[pc]
+    let mut rg: jit_ir::Region = vm.jit_regions[ri]
+    if rg.uses_calls && rg.epoch != vm.jit_epoch is
+        let rg2: jit_ir::Region = compile(vm, pc, kind)
+        vm.jit_regions[ri] = rg2
+        vm.jit_compiles += 1
+        if rg2.state != 1 is
+            vm.jit_state[pc] = 2
+            return false
+        end
+        rg = rg2
+    end
+    if !jit_exec::enter_ok(vm, rg) is
+        rg.guard_fails += 1
+        if rg.guard_fails > 24 && rg.guard_fails > rg.entries is
+            vm.jit_state[pc] = 3
+            rg.why = "zmienne pętli nie są liczbami całkowitymi"
+        end
+        return false
+    end
+    rg.entries += 1
+    let resume: int = jit_native::run_or_interp(vm, rg)
+    if resume == pc is
+        ;; no progress (while-iteration limit reached): let tier 0 execute the header and raise the error
+        vm.pc = pc + 1
+        vm.jit_state[pc] = 3
+        return false
+    end
+    if rg.entries >= 16 && rg.deopts * 2 > rg.entries is
+        vm.jit_state[pc] = 3
+        rg.why = "zbyt wiele deoptymalizacji (liczby dziesiętne / przepełnienie)"
+    end
+    return true
+end
+
+;; Static analysis for `hlpp jit`: lower every loop of the program without running it.
+pub fn analyze(vm: hlpp_vm::VM, show_ir: bool, show_clif: bool) -> string is
+    hlpp_vm::ensure_slots(vm)
+    hlpp_vm::ensure_code(vm)
+    hlpp_vm::ensure_lits(vm)
+    let n: int = hlpp_prog::here(vm.p)
+    let mut i: int = 0
+    while i < n is
+        if vm.p.code[i * 4] == hlpp_ops::op_deffunc() is
+            hlpp_map::put(vm.fns, vm.p.lits[vm.p.code[i * 4 + 1]], i + 1)
+        end
+        i += 1
+    end
+    let mut out: string = ""
+    let mut j: int = 0
+    while j < n is
+        let op: int = vm.p.code[j * 4]
+        let mut kind: int = 0
+        let mut kn: string = ""
+        if op == hlpp_ops::op_whtick() is
+            kind = 1
+            kn = "?~ while"
+        else if op == hlpp_ops::op_rptnext() is
+            kind = 2
+            kn = "_N repeat"
+        end
+        if kind > 0 is
+            let rg: jit_ir::Region = compile(vm, j, kind)
+            let ln: int = vm.p.lines[j]
+            if rg.state == 1 is
+                out = out + "linia " + to_string(ln) + "  " + kn + "  ✓ JIT: " + to_string(rg.n) + " instr. IR, " + to_string(rg.nhome) + " zmiennych, " + to_string(rg.nex) + " wyjść"
+                if rg.uses_calls is out = out + ", z wstawionymi funkcjami" end
+                out = out + "\n"
+                if show_ir is out = out + jit_dump::dump(vm, rg) end
+                if show_clif is
+                    out = out + ";; CLIF (tier 2), " + to_string(jit_clif::callouts(rg)) + " call-out(s)\n"
+                    out = out + jit_clif::emit(rg, "region_" + to_string(j))
+                end
+            else is
+                out = out + "linia " + to_string(ln) + "  " + kn + "  ✗ tier-0: " + rg.why + "\n"
+            end
+        end
+        j += 1
+    end
+    if string_len(out) == 0 is out = "program nie zawiera pętli\n" end
+    return out
+end
+
+pub fn stats_line(vm: hlpp_vm::VM) -> string is
+    let mut enters: int = 0
+    let mut deopts: int = 0
+    let mut iters: int = 0
+    let mut live: int = 0
+    let mut i: int = 0
+    while i < array_len(vm.jit_regions) is
+        let rg: jit_ir::Region = vm.jit_regions[i]
+        enters += rg.entries
+        deopts += rg.deopts
+        iters += rg.iters
+        if rg.state == 1 is live += 1 end
+        i += 1
+    end
+    return "[jit] regiony: " + to_string(live) + " aktywnych / " + to_string(vm.jit_compiles) + " skompilowanych / " + to_string(vm.jit_rejects) + " odrzuconych; wejść: " + to_string(enters) + ", iteracji w JIT: " + to_string(iters) + ", deopt: " + to_string(deopts)
+end

@@ -1,0 +1,80 @@
+mod syntax_core
+
+pub fn add_rules(r: syntax_core::Registry) is
+    let s: string = "syntax_flow"
+
+    syntax_core::add_run(r, s, "flow.ok", "flow", "? ok", "? ok\n  <block>\ndone", syntax_core::ed_any(),
+        "Run the block when the previous command / statement succeeded.",
+        "The condition is the *last status*; a skipped block resets the status to success, so test and branch in one step (`> cmd` then `? ok`, or store the result with `|> @var`).",
+        "using <gen 2026>\n> test 1 -eq 1\n? ok\n  ~> yes\ndone\n", "yes\n")
+
+    syntax_core::add_run(r, s, "flow.err", "flow", "? err", "? err\n  <block>\ndone", syntax_core::ed_any(),
+        "Run the block when the previous command failed.",
+        "",
+        "using <gen 2026>\n> test 1 -eq 2\n? err\n  ~> no\ndone\n", "no\n")
+
+    syntax_core::add_run(r, s, "flow.if", "flow", "? <cond>", "? <condition>\n  <block>\n?: <condition>\n  <block>\n?:\n  <block>\ndone", syntax_core::ed_gen2(),
+        "Conditional with optional else-if (`?: <condition>`) and else (`?:`) branches, closed by one `done`.",
+        "The condition is compared directly: `? @a < @b`. `? ok` / `? err` (alone on the line) test the status of the previous command and take `?:` branches too.",
+        "using <gen 2026>\n% a = 3\n% b = 5\n? @a > @b\n  ~> greater\n?: @a == @b\n  ~> equal\n?:\n  ~> less\ndone\n", "less\n")
+
+    syntax_core::add_run(r, s, "flow.else.status", "flow", "? ok", "? ok\n  <block>\n?:\n  <block>\ndone", syntax_core::ed_gen2(),
+        "`?:` after `? ok` / `? err` is a real else: the status is tested once, so a skipped block cannot disturb the other branch.",
+        "",
+        "using <gen 2026>\n> test 1 -eq 2\n? ok\n  ~> equal\n?:\n  ~> different\ndone\n", "different\n")
+
+    syntax_core::add_run(r, s, "flow.logic", "flow", "&& || ! ( )", "<cond> && <cond>   <cond> || <cond>   !<cond>   (<cond>)", syntax_core::ed_gen2(),
+        "Logical operators in `?` and `?~` conditions: `&&` and `||` short-circuit, `!` negates (pushed down onto the comparisons), parentheses group.",
+        "Precedence from low to high: `||`, `&&`, `!`, comparison. The comparisons are `==  !=  <  <=  >  >=`.",
+        "using <gen 2026>\n% x = 7\n? (@x > 3 && @x < 6) || @x == 7\n  ~> match\ndone\n? !(@x > 3 && @x < 9)\n  ~> outside\n?:\n  ~> inside\ndone\n", "match\ninside\n")
+
+    syntax_core::add_run(r, s, "flow.cond.arith", "flow", "? a + b", "<operand> <op> <operand>    operand = value | @var | arithmetic expression", syntax_core::ed_gen2(),
+        "Operands of a comparison may be arithmetic expressions (operators written between spaces, or parentheses); they are evaluated exactly like `$( )` before the comparison.",
+        "This works in `?` and in `?~`, and the JIT compiles such loops.",
+        "using <gen 2026>\n% n = 50\n% d = 1\n?~ @d * @d <= @n\n  $( @d + 1 ) -> @d\ndone\n~> first d with d*d > n: @d\n", "first d with d*d > n: 8\n")
+
+    syntax_core::add_run(r, s, "flow.while", "flow", "?~", "?~ <left> <op> <right>\n  <block>\ndone", syntax_core::ed_gen2(),
+        "While loop. Operators: == != < <= > >= (integers and strings).",
+        "The loop is capped at 1,000,000 iterations. Loops with integer conditions are compiled by the JIT.",
+        "using <gen 2026>\n% i = 0\n?~ @i < 3\n  ~> i=@i\n  $( @i + 1 ) -> @i\ndone\n", "i=0\ni=1\ni=2\n")
+
+    syntax_core::add_run(r, s, "flow.repeat", "flow", "_N", "_<count>\n  <statement>", syntax_core::ed_gen2(),
+        "Repeat the next statement `count` times.",
+        "A block form is not part of the syntax: the repeated unit is one statement.",
+        "using <gen 2026>\n% n = 0\n_5\n  $( @n + 2 ) -> @n\n~> n=@n\n", "n=10\n")
+
+    syntax_core::add_run(r, s, "flow.for", "flow", "@ x in", "@ <var> in <list>\n  <block>\ndone", syntax_core::ed_gen2(),
+        "Iterate over the whitespace-separated words of a list (often the output of a command).",
+        "",
+        "using <gen 2026>\n@ w in alpha beta gamma\n  ~> word @w\ndone\n", "word alpha\nword beta\nword gamma\n")
+
+    syntax_core::add_run(r, s, "flow.switch", "flow", "?switch", "?switch <value>\n  | <pattern> ->\n    <block>\n  | * ->\n    <block>\ndone", syntax_core::ed_gen2(),
+        "Multi-way branch; `*` is the default arm.",
+        "The body of an arm starts on the line after `->`. Patterns may contain @variables.",
+        "using <gen 2026>\n% cmd = test\n?switch @cmd\n  | build ->\n    ~> B\n  | test ->\n    ~> T\n  | * ->\n    ~> other\ndone\n", "T\n")
+
+    syntax_core::add_run(r, s, "flow.try", "flow", "try", "try\n  <block>\ncatch [@name]\n  <block>\ndone", syntax_core::ed_gen2(),
+        "Error handling: any error inside `try` (throw, bad index, undefined function, failing command check) jumps to `catch`. The message lands in @name and in @_error.",
+        "`catch` is optional (errors are then swallowed). Blocks nest; errors raised inside called functions unwind to the nearest `try`. A `catch` body may `throw` again.",
+        "using <gen 2026>\n: boom def\n  throw broken\ndone\ntry\n  -- boom\n  ~> unreachable\ncatch @e\n  ~> caught @e\ndone\n", "caught broken\n")
+
+    syntax_core::add_run(r, s, "flow.throw", "flow", "throw", "throw [<message with @vars>]", syntax_core::ed_gen2(),
+        "Raise an error with a message. Without `try` it stops the program like any runtime error.",
+        "",
+        "using <gen 2026>\n% n = 4\ntry\n  throw bad value @n\ncatch\n  ~> @_error\ndone\n", "bad value 4\n")
+
+    syntax_core::add_bad(r, s, "flow.err.catch", "flow", "catch", "<catch without try>", syntax_core::ed_gen2(),
+        "`catch` is only valid directly inside a `try` block.",
+        "",
+        "using <gen 2026>\ncatch @e\n  ~> x\ndone\n")
+
+    syntax_core::add_bad(r, s, "flow.err.else", "flow", "?:", "<else without a conditional>", syntax_core::ed_gen2(),
+        "`?:` is only valid inside `? ...` / `? ok` / `? err`.",
+        "",
+        "using <gen 2026>\n?:\n  ~> orphan\ndone\n")
+
+    syntax_core::add_bad(r, s, "flow.err.done", "flow", "done", "<missing done>", syntax_core::ed_any(),
+        "Every block must be closed with `done`.",
+        "",
+        "using <gen 2026>\n% i = 0\n?~ @i < 3\n  $( @i + 1 ) -> @i\n")
+end

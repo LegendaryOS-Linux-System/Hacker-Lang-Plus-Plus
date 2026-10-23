@@ -1,0 +1,820 @@
+mod hlpp_text
+mod hlpp_map
+mod hlpp_ops
+mod hlpp_prog
+mod hlpp_vm
+mod jit_ir
+
+pub struct V is
+    pub k: int      ;; 0 constant, 1 register
+    pub v: int
+end
+
+struct Fx is
+    vm: hlpp_vm::VM
+    rg: jit_ir::Region
+    top: int
+    endj: int
+    exitpc: int
+    stop: int
+    kind: int
+    hmap: hlpp_map::SMap
+    labmap: hlpp_map::SMap
+    fix_at: [int]
+    fix_off: [int]
+    fix_inst: [int]
+    fix_pc: [int]
+    fix_ex: [int]
+    stub_ex: [int]
+    stub_at: [int]
+    err: string
+    ninst: int
+    wd: int
+    rd: int
+    maxw: int
+    maxr: int
+    chain: [int]
+    fnstack: [int]
+    stmt_pc: int
+    tnext: int
+    tmax: int
+    vk: [int]
+    vv: [int]
+    vsp: int
+    sk: [int]
+    sv: [int]
+    is_: [int]
+    ic: [int]
+    isp: int
+end
+
+fn fail(fx: Fx, msg: string) is
+    if string_len(fx.err) == 0 is fx.err = msg end
+end
+
+fn bad(fx: Fx) -> bool is
+    return string_len(fx.err) > 0
+end
+
+fn abs_lt(x: int, lim: int) -> bool is
+    return x < lim && x > 0 - lim
+end
+
+;; canonical decimal integer literal?  (same rule as the tier-0 `int_kind` for literals)
+fn lit_int(fx: Fx, li: int) -> hlpp_text::IntParse is
+    let s: string = fx.vm.p.lits[li]
+    let ip: hlpp_text::IntParse = hlpp_text::parse_i(s)
+    if ip.ok is
+        let v: int = ip.v
+        if to_string(v) == s is return ip end
+    end
+    return hlpp_text::IntParse { ok: false, v: 0 }
+end
+
+fn home_of(fx: Fx, slot: int, rd: bool, wr: bool) -> int is
+    let key: string = to_string(slot)
+    let mut h: int = hlpp_map::get(fx.hmap, key, 0 - 1)
+    if h < 0 is
+        if fx.rg.nhome >= jit_ir::home_base() is
+            fail(fx, "za dużo zmiennych w pętli (limit " + to_string(jit_ir::home_base()) + ")")
+            return 0
+        end
+        h = fx.rg.nhome
+        fx.rg.nhome += 1
+        hlpp_map::put(fx.hmap, key, h)
+        fx.rg.home_slot = array_push(fx.rg.home_slot, slot)
+        fx.rg.home_read = array_push(fx.rg.home_read, 0)
+        fx.rg.home_dirty = array_push(fx.rg.home_dirty, 0)
+    end
+    if rd is fx.rg.home_read[h] = 1 end
+    if wr is fx.rg.home_dirty[h] = 1 end
+    return h
+end
+
+fn temp(fx: Fx) -> int is
+    let t: int = jit_ir::home_base() + fx.tnext
+    fx.tnext += 1
+    if fx.tnext > fx.tmax is fx.tmax = fx.tnext end
+    return t
+end
+
+fn emit(fx: Fx, op: int, d: int, a: int, b: int, c: int, e: int) -> int is
+    return jit_ir::emit(fx.rg, op, d, a, b, c, e)
+end
+
+fn exit_here(fx: Fx, pc: int, flag: int) -> int is
+    return jit_ir::add_exit(fx.rg, pc, fx.wd, fx.rd, flag, fx.chain)
+end
+
+fn label(fx: Fx, inst: int, pc: int) is
+    hlpp_map::put(fx.labmap, to_string(inst) + ":" + to_string(pc), fx.rg.n)
+end
+
+;; register a jump whose target field (offset off) of IR instruction `at` is patched later
+fn fixup(fx: Fx, at: int, off: int, inst: int, pc: int, flag: int) is
+    let mut ex: int = 0 - 1
+    if inst == 0 && (pc >= fx.stop || pc < fx.top) is ex = exit_here(fx, pc, flag) end
+    fx.fix_at = array_push(fx.fix_at, at)
+    fx.fix_off = array_push(fx.fix_off, off)
+    fx.fix_inst = array_push(fx.fix_inst, inst)
+    fx.fix_pc = array_push(fx.fix_pc, pc)
+    fx.fix_ex = array_push(fx.fix_ex, ex)
+end
+
+;; ── numeric statements ──────────────────────────────────────────────────────
+fn vpush(fx: Fx, k: int, v: int) is
+    if fx.vsp < array_len(fx.vk) is
+        fx.vk[fx.vsp] = k
+        fx.vv[fx.vsp] = v
+    else is
+        fx.vk = array_push(fx.vk, k)
+        fx.vv = array_push(fx.vv, v)
+    end
+    fx.vsp += 1
+end
+
+fn materialize(fx: Fx, x: V) -> int is
+    if x.k == 1 is return x.v end
+    let t: int = temp(fx)
+    emit(fx, jit_ir::j_const(), t, x.v, 1, 0, 0)
+    return t
+end
+
+fn bin(fx: Fx, code: int, x: V, y: V) -> V is
+    let la: int = jit_ir::lim_add()
+    let lm: int = jit_ir::lim_mul()
+    ;; ── constant folding (only where the tier-0 fast path would give the same answer) ──
+    if x.k == 0 && y.k == 0 is
+        if code <= 1 && abs_lt(x.v, la) && abs_lt(y.v, la) is
+            if code == 0 is return V { k: 0, v: x.v + y.v } end
+            return V { k: 0, v: x.v - y.v }
+        end
+        if code == 2 && abs_lt(x.v, lm) && abs_lt(y.v, lm) is return V { k: 0, v: x.v * y.v } end
+        if code == 3 is
+            if y.v == 0 is return V { k: 0, v: 0 } end
+            if x.v % y.v == 0 is return V { k: 0, v: x.v / y.v } end
+        end
+        if code == 4 is
+            if y.v == 0 is return V { k: 0, v: 0 } end
+            return V { k: 0, v: x.v % y.v }
+        end
+    end
+    ;; ── algebraic identities ──
+    if y.k == 0 is
+        if code == 0 && y.v == 0 is return x end
+        if code == 1 && y.v == 0 is return x end
+        if code == 2 && y.v == 1 is return x end
+        if code == 2 && y.v == 0 is return V { k: 0, v: 0 } end
+        if code == 3 && y.v == 1 is return x end
+        if code == 3 && y.v == 0 is return V { k: 0, v: 0 } end
+        if code == 4 && (y.v == 0 || y.v == 1) is return V { k: 0, v: 0 } end
+    end
+    if x.k == 0 is
+        if code == 0 && x.v == 0 is return y end
+        if code == 2 && x.v == 1 is return y end
+        if code == 2 && x.v == 0 is return V { k: 0, v: 0 } end
+    end
+    let ex: int = exit_here(fx, fx.stmt_pc, 0 - 2)
+    let t: int = temp(fx)
+    ;; ── immediate forms ──
+    if y.k == 1 && x.k == 0 && (code == 0 || code == 2) is
+        ;; commutative: put the constant on the right
+        if code == 0 && abs_lt(x.v, la) is
+            emit(fx, jit_ir::j_addi(), t, y.v, x.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+        if code == 2 && abs_lt(x.v, lm) is
+            emit(fx, jit_ir::j_muli(), t, y.v, x.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+    end
+    if x.k == 1 && y.k == 0 is
+        if code == 0 && abs_lt(y.v, la) is
+            emit(fx, jit_ir::j_addi(), t, x.v, y.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+        if code == 1 && abs_lt(y.v, la) is
+            emit(fx, jit_ir::j_subi(), t, x.v, y.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+        if code == 2 && abs_lt(y.v, lm) is
+            emit(fx, jit_ir::j_muli(), t, x.v, y.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+        if code == 3 is
+            emit(fx, jit_ir::j_divi(), t, x.v, y.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+        if code == 4 is
+            emit(fx, jit_ir::j_remi(), t, x.v, y.v, 0, ex)
+            return V { k: 1, v: t }
+        end
+    end
+    let ra: int = materialize(fx, x)
+    let rb: int = materialize(fx, y)
+    let mut op: int = jit_ir::j_add()
+    if code == 1 is op = jit_ir::j_sub() end
+    if code == 2 is op = jit_ir::j_mul() end
+    if code == 3 is op = jit_ir::j_div() end
+    if code == 4 is op = jit_ir::j_rem() end
+    emit(fx, op, t, ra, rb, 0, ex)
+    return V { k: 1, v: t }
+end
+
+;; nbeg … nend ; returns the pc after nend
+fn tr_num(fx: Fx, pc0: int) -> int is
+    let code: [int] = fx.vm.p.code
+    fx.stmt_pc = pc0
+    fx.tnext = 0
+    fx.vsp = 0
+    let mut pc: int = pc0 + 1
+    while !bad(fx) is
+        let base: int = pc * 4
+        let op: int = code[base]
+        let a: int = code[base + 1]
+        let b: int = code[base + 2]
+        if op == hlpp_ops::op_nlit() is
+            let ip: hlpp_text::IntParse = lit_int(fx, a)
+            if !ip.ok is
+                fail(fx, "literał liczbowy '" + fx.vm.p.lits[a] + "' nie jest liczbą całkowitą")
+                return pc + 1
+            end
+            vpush(fx, 0, ip.v)
+        else if op == hlpp_ops::op_nvar() is
+            vpush(fx, 1, home_of(fx, a, true, false))
+        else if op == hlpp_ops::op_nbin() is
+            if fx.vsp < 2 is
+                fail(fx, "uszkodzony program numeryczny")
+                return pc + 1
+            end
+            let y: V = V { k: fx.vk[fx.vsp - 1], v: fx.vv[fx.vsp - 1] }
+            let x: V = V { k: fx.vk[fx.vsp - 2], v: fx.vv[fx.vsp - 2] }
+            fx.vsp -= 2
+            let r: V = bin(fx, a, x, y)
+            vpush(fx, r.k, r.v)
+        else if op == hlpp_ops::op_nneg() is
+            if fx.vsp < 1 is
+                fail(fx, "uszkodzony program numeryczny")
+                return pc + 1
+            end
+            let kk: int = fx.vk[fx.vsp - 1]
+            let vv: int = fx.vv[fx.vsp - 1]
+            if kk == 0 is
+                fx.vv[fx.vsp - 1] = 0 - vv
+            else is
+                let t: int = temp(fx)
+                emit(fx, jit_ir::j_neg(), t, vv, 0, 0, 0)
+                fx.vv[fx.vsp - 1] = t
+            end
+        else if op == hlpp_ops::op_nend() is
+            if fx.vsp < 1 is
+                fail(fx, "uszkodzony program numeryczny")
+                return pc + 1
+            end
+            let rk: int = fx.vk[fx.vsp - 1]
+            let rv: int = fx.vv[fx.vsp - 1]
+            if a >= 0 is
+                let h: int = home_of(fx, a, false, true)
+                if rk == 0 is
+                    emit(fx, jit_ir::j_const(), h, rv, 1, 0, 0)
+                else is
+                    ;; fuse "op tmp ; mov home,tmp" into "op home" when tmp was just produced
+                    let last: int = (fx.rg.n - 1) * 6
+                    let mut fused: bool = false
+                    if rv >= jit_ir::home_base() && fx.rg.n > 0 is
+                        let lop: int = fx.rg.code[last]
+                        if fx.rg.code[last + 1] == rv && (lop == jit_ir::j_neg() || jit_ir::is_guarded(lop)) && lop != jit_ir::j_tick() is
+                            fx.rg.code[last + 1] = h
+                            fused = true
+                            emit(fx, jit_ir::j_nop(), h, 0, 1, 0, 0)   ;; marks the home as typed (numeric) for the exit flush
+                        end
+                    end
+                    if !fused is emit(fx, jit_ir::j_mov(), h, rv, 1, 0, 0) end
+                end
+            else is
+                let r: int = materialize(fx, V { k: rk, v: rv })
+                emit(fx, jit_ir::j_printreg(), 0, r, 0, 0, 0)
+            end
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            return pc + 1
+        else is
+            fail(fx, "nieobsługiwana instrukcja w wyrażeniu: " + hlpp_ops::op_name(op))
+            return pc + 1
+        end
+        pc += 1
+    end
+    return pc
+end
+
+;; ── conditions ──────────────────────────────────────────────────────────────
+fn operand_v(fx: Fx, x: int) -> V is
+    if x >= 0 is return V { k: 1, v: home_of(fx, x, true, false) } end
+    let li: int = 0 - x - 1
+    let ip: hlpp_text::IntParse = lit_int(fx, li)
+    if !ip.ok is
+        fail(fx, "porównanie z literałem nie-całkowitym '" + fx.vm.p.lits[li] + "'")
+        return V { k: 0, v: 0 }
+    end
+    return V { k: 0, v: ip.v }
+end
+
+fn cmp_const(code: int, x: int, y: int) -> bool is
+    if code == 0 is return x == y end
+    if code == 1 is return x != y end
+    if code == 2 is return x >= y end
+    if code == 3 is return x <= y end
+    if code == 4 is return x > y end
+    return x < y
+end
+
+;; cmpv at pc followed by jfalse/jtrue; returns pc after the jump
+fn tr_cmp(fx: Fx, inst: int, pc: int) -> int is
+    let code: [int] = fx.vm.p.code
+    let base: int = pc * 4
+    let cc: int = code[base + 1]
+    let x: V = operand_v(fx, code[base + 2])
+    let y: V = operand_v(fx, code[base + 3])
+    let jb: int = (pc + 1) * 4
+    let jop: int = code[jb]
+    if jop != hlpp_ops::op_jfalse() && jop != hlpp_ops::op_jtrue() is
+        fail(fx, "porównanie bez skoku warunkowego")
+        return pc + 1
+    end
+    let target: int = code[jb + 1]
+    label(fx, inst, pc + 1)
+    ;; jfalse jumps when the comparison is FALSE
+    let mut jc: int = cc
+    let mut flag: int = 1
+    if jop == hlpp_ops::op_jfalse() is
+        flag = 0
+        if cc == 0 is jc = 1
+        else if cc == 1 is jc = 0
+        else if cc == 2 is jc = 5
+        else if cc == 3 is jc = 4
+        else if cc == 4 is jc = 3
+        else is jc = 2 end
+    end
+    if x.k == 0 && y.k == 0 is
+        if cmp_const(jc, x.v, y.v) is
+            let at0: int = emit(fx, jit_ir::j_jmp(), 0, 0, 0, 0, 0)
+            fixup(fx, at0, 2, inst, target, flag)
+        end
+        return pc + 2
+    end
+    if x.k == 0 && y.k == 1 is
+        ;; swap so the constant is on the right: c op r  ==  r flip(op) c
+        let flip: [int] = [0, 1, 3, 2, 5, 4]
+        let at1: int = emit(fx, jit_ir::j_jeqi() + flip[jc], 0, y.v, x.v, 0, 0)
+        fixup(fx, at1, 4, inst, target, flag)
+        return pc + 2
+    end
+    if x.k == 1 && y.k == 0 is
+        let at2: int = emit(fx, jit_ir::j_jeqi() + jc, 0, x.v, y.v, 0, 0)
+        fixup(fx, at2, 4, inst, target, flag)
+        return pc + 2
+    end
+    let at3: int = emit(fx, jit_ir::j_jeq() + jc, 0, x.v, y.v, 0, 0)
+    fixup(fx, at3, 4, inst, target, flag)
+    return pc + 2
+end
+
+;; ── string output: lit / var / cat … print ───────────────────────────────────
+fn tr_print(fx: Fx, inst: int, pc0: int) -> int is
+    let code: [int] = fx.vm.p.code
+    fx.sk = []
+    fx.sv = []
+    fx.isp = 0
+    fx.is_ = []
+    fx.ic = []
+    let mut pc: int = pc0
+    while !bad(fx) is
+        let base: int = pc * 4
+        let op: int = code[base]
+        let a: int = code[base + 1]
+        if op == hlpp_ops::op_lit() is
+            fx.is_ = array_push(fx.is_, array_len(fx.sk))
+            fx.ic = array_push(fx.ic, 1)
+            fx.sk = array_push(fx.sk, 0)
+            fx.sv = array_push(fx.sv, a)
+            fx.isp += 1
+        else if op == hlpp_ops::op_var() is
+            fx.is_ = array_push(fx.is_, array_len(fx.sk))
+            fx.ic = array_push(fx.ic, 1)
+            fx.sk = array_push(fx.sk, 3)
+            fx.sv = array_push(fx.sv, a)
+            fx.isp += 1
+        else if op == hlpp_ops::op_cat() is
+            if a > fx.isp || a < 1 is
+                fail(fx, "uszkodzone złożenie napisu")
+                return pc + 1
+            end
+            let first: int = fx.isp - a
+            let st: int = fx.is_[first]
+            let mut total: int = 0
+            let mut q: int = first
+            while q < fx.isp is
+                total += fx.ic[q]
+                q += 1
+            end
+            ;; pop `a` items (rebuild arrays: no array_pop on shared arrays)
+            let mut ni: [int] = []
+            let mut nc: [int] = []
+            let mut z: int = 0
+            while z < first is
+                ni = array_push(ni, fx.is_[z])
+                nc = array_push(nc, fx.ic[z])
+                z += 1
+            end
+            ni = array_push(ni, st)
+            nc = array_push(nc, total)
+            fx.is_ = ni
+            fx.ic = nc
+            fx.isp = first + 1
+        else if op == hlpp_ops::op_print() is
+            if fx.isp != 1 is
+                fail(fx, "print: oczekiwano jednego napisu")
+                return pc + 1
+            end
+            let f: int = jit_ir::add_fmt(fx.rg, fx.sk, fx.sv)
+            emit(fx, jit_ir::j_printfmt(), 0, f, 0, 0, 0)
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            return pc + 1
+        else is
+            fail(fx, "napis budowany w pętli nie kończy się instrukcją print (" + hlpp_ops::op_name(op) + ")")
+            return pc + 1
+        end
+        pc += 1
+    end
+    return pc
+end
+
+;; ── ranges (instances = the loop itself and every inlined call) ─────────────
+fn tr_range(fx: Fx, inst: int, from: int, to: int) is
+    let vm: hlpp_vm::VM = fx.vm
+    let code: [int] = vm.p.code
+    let mut pc: int = from
+    while pc < to && !bad(fx) is
+        label(fx, inst, pc)
+        let base: int = pc * 4
+        let op: int = code[base]
+        let a: int = code[base + 1]
+        let b: int = code[base + 2]
+        if fx.rg.n > 4000 is
+            fail(fx, "region zbyt duży (> 4000 instrukcji IR)")
+            return
+        end
+        if op == hlpp_ops::op_nbeg() is
+            pc = tr_num(fx, pc)
+        else if op == hlpp_ops::op_lit() || op == hlpp_ops::op_var() is
+            pc = tr_print(fx, inst, pc)
+        else if op == hlpp_ops::op_cmpv() is
+            pc = tr_cmp(fx, inst, pc)
+        else if op == hlpp_ops::op_printlit() is
+            emit(fx, jit_ir::j_printlit(), 0, a, 0, 0, 0)
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_varprint() is
+            emit(fx, jit_ir::j_printvar(), 0, a, 0, 0, 0)
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_setlit() is
+            let ip: hlpp_text::IntParse = lit_int(fx, b)
+            let c: int = code[base + 3]
+            if !ip.ok || (c != 1 && c != 2) is
+                fail(fx, "przypisanie napisu '" + vm.p.lits[b] + "' do zmiennej w pętli")
+                return
+            end
+            let h: int = home_of(fx, a, false, true)
+            emit(fx, jit_ir::j_const(), h, ip.v, c, 0, 0)
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_nop() is
+            if a == 1 is emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0) end
+            pc += 1
+        else if op == hlpp_ops::op_jmp() is
+            let at: int = emit(fx, jit_ir::j_jmp(), 0, 0, 0, 0, 0)
+            fixup(fx, at, 2, inst, a, 0 - 1)
+            pc += 1
+        else if op == hlpp_ops::op_jifok() is
+            let at1: int = emit(fx, jit_ir::j_jlxok(), 0, 0, 0, 0, 0)
+            fixup(fx, at1, 2, inst, a, 0 - 1)
+            pc += 1
+        else if op == hlpp_ops::op_jiferr() is
+            let at2: int = emit(fx, jit_ir::j_jlxerr(), 0, 0, 0, 0, 0)
+            fixup(fx, at2, 2, inst, a, 0 - 1)
+            pc += 1
+        else if op == hlpp_ops::op_whinit() is
+            fx.wd += 1
+            if fx.wd > fx.maxw is fx.maxw = fx.wd end
+            emit(fx, jit_ir::j_winit(), fx.wd - 1, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_whtick() is
+            let ex: int = exit_here(fx, pc, 0 - 2)
+            emit(fx, jit_ir::j_tick(), fx.wd - 1, 0, 0, 0, ex)
+            pc += 1
+        else if op == hlpp_ops::op_whend() is
+            fx.wd -= 1
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_rptinit() is
+            fx.rd += 1
+            if fx.rd > fx.maxr is fx.maxr = fx.rd end
+            emit(fx, jit_ir::j_rinit(), fx.rd - 1, a, 0, 0, 0)
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else if op == hlpp_ops::op_rptnext() is
+            let at3: int = emit(fx, jit_ir::j_rnext(), fx.rd - 1, 0, 0, 0, 0)
+            fixup(fx, at3, 2, inst, a, 0 - 1)
+            pc += 1
+        else if op == hlpp_ops::op_rptend() is
+            fx.rd -= 1
+            pc += 1
+        else if op == hlpp_ops::op_call() is
+            let nm: string = vm.p.lits[a]
+            let at: int = hlpp_map::get(vm.fns, nm, 0 - 1)
+            if at < 0 is
+                fail(fx, "wywołanie niezdefiniowanej funkcji '" + nm + "'")
+                return
+            end
+            if array_len(fx.fnstack) >= 4 is
+                fail(fx, "zbyt głębokie wstawianie funkcji (" + nm + ")")
+                return
+            end
+            let mut k: int = 0
+            while k < array_len(fx.fnstack) is
+                if fx.fnstack[k] == at is
+                    fail(fx, "rekurencyjna funkcja '" + nm + "'")
+                    return
+                end
+                k += 1
+            end
+            ;; find the function's RET (first one; bodies cannot nest function definitions here)
+            let mut q: int = at
+            let n: int = hlpp_prog::here(vm.p)
+            let mut retpc: int = 0 - 1
+            while q < n && retpc < 0 is
+                let qop: int = code[q * 4]
+                if qop == hlpp_ops::op_ret() is
+                    retpc = q
+                else if qop == hlpp_ops::op_deffunc() || qop == hlpp_ops::op_defarena() || qop == hlpp_ops::op_defmeth() || qop == hlpp_ops::op_classdef() is
+                    fail(fx, "funkcja '" + nm + "' zawiera definicje")
+                    return
+                end
+                q += 1
+            end
+            if retpc < 0 is
+                fail(fx, "funkcja '" + nm + "' bez ret")
+                return
+            end
+            if retpc - at > 400 is
+                fail(fx, "funkcja '" + nm + "' zbyt duża do wstawienia")
+                return
+            end
+            fx.rg.uses_calls = true
+            fx.ninst += 1
+            let ni: int = fx.ninst
+            fx.fnstack = array_push(fx.fnstack, at)
+            fx.chain = array_push(fx.chain, pc + 1)
+            tr_range(fx, ni, at, retpc)
+            ;; leave the inlined frame: rebuild without the last element
+            let mut c2: [int] = []
+            let mut f2: [int] = []
+            let mut z: int = 0
+            while z < array_len(fx.chain) - 1 is
+                c2 = array_push(c2, fx.chain[z])
+                f2 = array_push(f2, fx.fnstack[z])
+                z += 1
+            end
+            fx.chain = c2
+            fx.fnstack = f2
+            emit(fx, jit_ir::j_setx(), 0, 0, 0, 0, 0)
+            pc += 1
+        else is
+            fail(fx, "nieobsługiwana instrukcja " + hlpp_ops::op_name(op))
+            return
+        end
+    end
+end
+
+;; ── region extent: loops are merged with the straight-line code that follows them ──────────
+;; first pc >= `from` whose statement the region cannot contain (statement boundaries are respected, an
+;; unfinished loop is cut back to its start so tier 0 never resumes in the middle of a string build)
+fn scan_stop(vm: hlpp_vm::VM, from: int) -> int is
+    let code: [int] = vm.p.code
+    let n: int = hlpp_prog::here(vm.p)
+    let mut pc: int = from
+    let mut starts: [int] = []
+    let mut stop: int = 0 - 1
+    while pc < n && stop < 0 is
+        let base: int = pc * 4
+        let op: int = code[base]
+        let a: int = code[base + 1]
+        if op == hlpp_ops::op_nbeg() is
+            let mut q: int = pc + 1
+            while q < n && code[q * 4] != hlpp_ops::op_nend() is q += 1 end
+            if q >= n is stop = pc else is pc = q + 1 end
+        else if op == hlpp_ops::op_lit() || op == hlpp_ops::op_var() || op == hlpp_ops::op_cat() is
+            let mut q2: int = pc
+            while q2 < n && (code[q2 * 4] == hlpp_ops::op_lit() || code[q2 * 4] == hlpp_ops::op_var() || code[q2 * 4] == hlpp_ops::op_cat()) is q2 += 1 end
+            if q2 < n && code[q2 * 4] == hlpp_ops::op_print() is pc = q2 + 1 else is stop = pc end
+        else if op == hlpp_ops::op_cmpv() is
+            let jop: int = code[(pc + 1) * 4]
+            if jop == hlpp_ops::op_jfalse() || jop == hlpp_ops::op_jtrue() is pc += 2 else is stop = pc end
+        else if op == hlpp_ops::op_setlit() is
+            let ip: hlpp_text::IntParse = hlpp_text::parse_i(vm.p.lits[code[base + 2]])
+            let c: int = code[base + 3]
+            let mut ok: bool = false
+            if ip.ok && (c == 1 || c == 2) && to_string(ip.v) == vm.p.lits[code[base + 2]] is ok = true end
+            if ok is pc += 1 else is stop = pc end
+        else if op == hlpp_ops::op_whinit() || op == hlpp_ops::op_rptinit() is
+            starts = array_push(starts, pc)
+            pc += 1
+        else if op == hlpp_ops::op_whend() || op == hlpp_ops::op_rptend() is
+            if array_len(starts) == 0 && pc == from && from > 0 is
+                pc += 1
+            else if array_len(starts) == 0 is
+                stop = pc
+            else is
+                let mut ns: [int] = []
+                let mut z: int = 0
+                while z < array_len(starts) - 1 is
+                    ns = array_push(ns, starts[z])
+                    z += 1
+                end
+                starts = ns
+                pc += 1
+            end
+        else if op == hlpp_ops::op_printlit() || op == hlpp_ops::op_varprint() || op == hlpp_ops::op_nop() || op == hlpp_ops::op_jmp() || op == hlpp_ops::op_jifok() || op == hlpp_ops::op_jiferr() || op == hlpp_ops::op_whtick() || op == hlpp_ops::op_rptnext() || op == hlpp_ops::op_call() is
+            pc += 1
+        else is
+            stop = pc
+        end
+    end
+    if stop < 0 is stop = pc end
+    if array_len(starts) > 0 is stop = starts[0] end
+    return stop
+end
+
+;; ── entry point ─────────────────────────────────────────────────────────────
+;; kind 1 = while loop (entry pc is its whtick), 2 = repeat loop (entry pc is its rptnext)
+pub fn build(vm: hlpp_vm::VM, pc: int, kind: int) -> jit_ir::Region is
+    let rg: jit_ir::Region = build_ext(vm, pc, kind, true)
+    if rg.state == 2 && kind != 3 is
+        return build_ext(vm, pc, kind, false)
+    end
+    return rg
+end
+
+fn has_loop(rg: jit_ir::Region) -> bool is
+    let mut i: int = 0
+    while i < rg.n is
+        let o: int = rg.code[i * 6]
+        if o == jit_ir::j_tick() || o == jit_ir::j_rnext() is return true end
+        i += 1
+    end
+    return false
+end
+
+fn build_ext(vm: hlpp_vm::VM, pc: int, kind: int, merge: bool) -> jit_ir::Region is
+    let rg: jit_ir::Region = jit_ir::new_region(pc, kind)
+    let code: [int] = vm.p.code
+    let n: int = hlpp_prog::here(vm.p)
+    rg.src_lines = 0
+    if pc < array_len(vm.p.lines) is rg.src_lines = vm.p.lines[pc] end
+    let mut endj: int = 0 - 1
+    let mut stop: int = 0 - 1
+    if kind == 3 is
+        stop = scan_stop(vm, pc)
+        if stop <= pc is
+            rg.state = 2
+            rg.why = "wywołanie bez obsługiwanego ciała"
+            return rg
+        end
+    else is
+        ;; the loop ends with `jmp <entry>`
+        let mut q: int = pc + 1
+        while q < n && endj < 0 is
+            if code[q * 4] == hlpp_ops::op_jmp() && code[q * 4 + 1] == pc is endj = q end
+            q += 1
+        end
+        if endj < 0 is
+            rg.state = 2
+            rg.why = "nie znaleziono skoku powrotnego pętli"
+            return rg
+        end
+        stop = endj + 1
+        if merge is stop = scan_stop(vm, endj + 1) end
+    end
+    let fx: Fx = Fx { vm: vm, rg: rg, top: pc, endj: endj, exitpc: stop, stop: stop, kind: kind, hmap: hlpp_map::new(), labmap: hlpp_map::new(),
+                      fix_at: [], fix_off: [], fix_inst: [], fix_pc: [], fix_ex: [], stub_ex: [], stub_at: [], err: "", ninst: 0,
+                      wd: 0, rd: 0, maxw: 0, maxr: 0, chain: [], fnstack: [], stmt_pc: pc, tnext: 0, tmax: 0,
+                      vk: [], vv: [], vsp: 0, sk: [], sv: [], is_: [], ic: [], isp: 0 }
+    if kind == 1 is
+        fx.wd = 1
+        fx.maxw = 1
+    else if kind == 2 is
+        fx.rd = 1
+        fx.maxr = 1
+    end
+    tr_range(fx, 0, pc, stop)
+    if !bad(fx) && kind == 3 && !has_loop(rg) is fail(fx, "region wywołania nie zawiera pętli") end
+    if !bad(fx) is finish(fx) end
+    if bad(fx) is
+        rg.state = 2
+        rg.why = fx.err
+        return rg
+    end
+    rg.ntemps = fx.tmax
+    rg.epoch = vm.jit_epoch
+    rg.state = 1
+    let mut r: [int] = []
+    let mut i: int = 0
+    while i < jit_ir::home_base() + fx.tmax + 1 is
+        r = array_push(r, 0)
+        i += 1
+    end
+    rg.regs = r
+    let mut t: [int] = []
+    let mut j: int = 0
+    while j < jit_ir::home_base() is
+        t = array_push(t, 0)
+        j += 1
+    end
+    rg.rt = t
+    let mut w: [int] = []
+    let mut k: int = 0
+    while k < fx.maxw + 1 is
+        w = array_push(w, 0)
+        k += 1
+    end
+    rg.cw = w
+    let mut rr: [int] = []
+    let mut m: int = 0
+    while m < fx.maxr + 1 is
+        rr = array_push(rr, 0)
+        m += 1
+    end
+    rg.cr = rr
+    return rg
+end
+
+;; resolve jumps, create exit stubs, convert print pieces to registers
+fn finish(fx: Fx) is
+    let rg: jit_ir::Region = fx.rg
+    let mut i: int = 0
+    while i < array_len(fx.fix_at) && !bad(fx) is
+        let at: int = fx.fix_at[i]
+        let ex: int = fx.fix_ex[i]
+        let mut tgt: int = 0 - 1
+        if ex >= 0 is
+            let mut s: int = 0
+            while s < array_len(fx.stub_ex) is
+                if fx.stub_ex[s] == ex is tgt = fx.stub_at[s] end
+                s += 1
+            end
+            if tgt < 0 is
+                tgt = emit(fx, jit_ir::j_exit(), 0, 0, 0, 0, ex)
+                fx.stub_ex = array_push(fx.stub_ex, ex)
+                fx.stub_at = array_push(fx.stub_at, tgt)
+            end
+        else is
+            let key: string = to_string(fx.fix_inst[i]) + ":" + to_string(fx.fix_pc[i])
+            tgt = hlpp_map::get(fx.labmap, key, 0 - 1)
+            if tgt < 0 is
+                fail(fx, "skok poza region (pc " + to_string(fx.fix_pc[i]) + ")")
+            end
+        end
+        if tgt >= 0 is rg.code[at * 6 + fx.fix_off[i]] = tgt end
+        i += 1
+    end
+    if bad(fx) is return end
+    ;; a loop that falls off the end can never happen (it ends with an unconditional jmp) but be safe
+    emit(fx, jit_ir::j_exit(), 0, 0, 0, 0, exit_here(fx, fx.exitpc, 0 - 1))
+    ;; print pieces: variables that are homes read from registers, the rest from the VM
+    let mut p: int = 0
+    while p < array_len(rg.pk) is
+        if rg.pk[p] == 3 is
+            let h: int = hlpp_map::get(fx.hmap, to_string(rg.pv[p]), 0 - 1)
+            if h >= 0 is
+                rg.pk[p] = 1
+                rg.pv[p] = h
+                rg.home_read[h] = 1
+            else is
+                rg.pk[p] = 2
+            end
+        end
+        p += 1
+    end
+    let mut k: int = 0
+    while k < rg.n is
+        if rg.code[k * 6] == jit_ir::j_printvar() is
+            let h2: int = hlpp_map::get(fx.hmap, to_string(rg.code[k * 6 + 2]), 0 - 1)
+            if h2 >= 0 is
+                rg.code[k * 6] = jit_ir::j_printreg()
+                rg.code[k * 6 + 2] = h2
+                rg.home_read[h2] = 1
+            end
+        end
+        k += 1
+    end
+end

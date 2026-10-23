@@ -1,0 +1,11 @@
+mod hlpp_vm
+mod jit_ir
+mod jit_exec
+
+pub fn available() -> bool is return false end
+
+pub fn reason() -> string is return "emitter CLIF gotowy (hlpp jit --clif), brak powiązania wykonawcy natywnego z VM" end
+
+pub fn run_or_interp(vm: hlpp_vm::VM, rg: jit_ir::Region) -> int is
+    return jit_exec::run(vm, rg)
+end

@@ -1,0 +1,65 @@
+mod syntax_core
+
+pub fn add_rules(r: syntax_core::Registry) is
+    let s: string = "syntax_oop"
+
+    syntax_core::add_run(r, s, "oop.class", "oop", ":+", ":+ <Class> [< <Parent>] def\n  % <field> = <default>\n  :. <method> def ... done\ndone", syntax_core::ed_hlpp(),
+        "Define a class: fields with defaults and methods. `< Parent` inherits fields and methods.",
+        "Objects live in a pooled heap and are released with `:- obj` (no garbage collector).",
+        "using <gen 2026>\n:+ Animal def\n  % name = ?\n  :. speak def\n    ~> @self.name makes a sound\n  done\ndone\n+> Animal a\n% a.name = Rex\n.> a speak\n:- a\n", "Rex makes a sound\n")
+
+    syntax_core::add_run(r, s, "oop.inherit", "oop", "<", ":+ <Child> < <Parent> def", syntax_core::ed_hlpp(),
+        "Inheritance: the child has the parent's fields and methods and may override them.",
+        "",
+        "using <gen 2026>\n:+ A def\n  % v = base\n  :. who def\n    ~> A:@self.v\n  done\ndone\n:+ B < A def\n  % v = derived\ndone\n+> B b\n.> b who\n:- b\n", "A:derived\n")
+
+    syntax_core::add_run(r, s, "oop.new", "oop", "+>", "+> <Class> <var> [constructor args]", syntax_core::ed_hlpp(),
+        "Create an object.",
+        "",
+        "using <gen 2026>\n:+ P def\n  % x = 1\ndone\n+> P p\n~> x=@p.x\n:- p\n", "x=1\n")
+
+    syntax_core::add_run(r, s, "oop.call", "oop", ".>", ".> <obj> <method> [args] [|> @<var>]", syntax_core::ed_hlpp(),
+        "Call a method; `@self` is the receiver. A trailing `|> @var` captures what the method printed / returned.",
+        "",
+        "using <gen 2026>\n:+ C def\n  % n = 0\n  :. inc def\n    $( @self.n + 1 ) -> @self.n\n  done\ndone\n+> C c\n.> c inc\n.> c inc\n~> n=@c.n\n:- c\n", "n=2\n")
+
+    syntax_core::add_run(r, s, "oop.field", "oop", "%", "% <obj>.<field> = <value>   $( ... ) -> @<obj>.<field>", syntax_core::ed_hlpp(),
+        "Read and write object fields (`@obj.field`).",
+        "",
+        "using <gen 2026>\n:+ Q def\n  % a = 1\ndone\n+> Q q\n% q.a = 10\n$( @q.a * 2 ) -> @q.a\n~> a=@q.a\n:- q\n", "a=20\n")
+
+    syntax_core::add_run(r, s, "oop.delete", "oop", ":-", ":- <obj>", syntax_core::ed_hlpp(),
+        "Release an object immediately; its slot returns to the pool.",
+        "The VM reports live objects with `--stats`, so leaks are visible.",
+        "using <gen 2026>\n:+ T def\n  % z = 0\ndone\n+> T t\n:- t\n~> done\n", "done\n")
+
+    syntax_core::add_run(r, s, "oop.interface", "oop", "interface", ":+ interface <Name> [< <Iface>, ...] def\n  :. <method> [params] abstract\ndone\n:+ <Class> [< <Base>,] <Iface>, <Iface> def", syntax_core::ed_gen2(),
+        "Interfaces hold only `abstract` methods. A class lists the interfaces it implements after `<` (at most one base class, any number of interfaces).",
+        "Instantiating a class that misses an abstract method is an error (catchable), reported with the missing method and where it came from.",
+        "using <gen 2026>\n:+ interface Named def\n  :. label abstract\ndone\n:+ Dog < Named def\n  :. label def\n    return dog\n  done\ndone\n+> Dog d\n.> d label |> @l\n~> @l\ntry\n  +> Named n\ncatch @e\n  ~> @e\ndone\n:- d\n", "dog\nNie można utworzyć instancji interfejsu 'Named'\n")
+
+    syntax_core::add_run(r, s, "oop.abstract", "oop", "abstract", ":+ abstract <Name> [< <Base>] def\n  :. <method> abstract\n  :. <method> def ... done\ndone", syntax_core::ed_gen2(),
+        "Abstract class: may hold fields and concrete methods next to `abstract` ones; it cannot be instantiated, subclasses must implement every abstract method.",
+        "",
+        "using <gen 2026>\n:+ abstract Animal def\n  :. sound abstract\n  :. speak def\n    .> self sound |> @s\n    ~> says @s\n  done\ndone\n:+ Cat < Animal def\n  :. sound def\n    return meow\n  done\ndone\n+> Cat c\n.> c speak\n:- c\n", "says meow\n")
+
+    syntax_core::add_run(r, s, "oop.super", "oop", "super", ".> super <method> [args] [|> @<var>]", syntax_core::ed_gen2(),
+        "Inside a method: call the base-class implementation on the same object. Works for `init` too, so constructors chain.",
+        "The target is fixed by the class that contains the call, not by the object's class, so multi-level chains behave.",
+        "using <gen 2026>\n:+ A def\n  :. hi def\n    ~> A\n  done\ndone\n:+ B < A def\n  :. hi def\n    .> super hi\n    ~> B\n  done\ndone\n:+ C < B def\n  :. hi def\n    .> super hi\n    ~> C\n  done\ndone\n+> C c\n.> c hi\n:- c\n", "A\nB\nC\n")
+
+    syntax_core::add_run(r, s, "oop.isa", "oop", "isa", ".> <obj> isa <Class> [|> @<var>]", syntax_core::ed_gen2(),
+        "Type test: true (status 0) when the object's class is, derives from or implements the class.",
+        "",
+        "using <gen 2026>\n:+ A def\n  % x = 0\ndone\n:+ B < A def\ndone\n+> B b\n.> b isa A |> @r\n~> @r\n.> b isa Nope |> @r\n~> @r\n:- b\n", "true\nfalse\n")
+
+    syntax_core::add_run(r, s, "flow.return", "flow", "return", "return [<value with @vars>]", syntax_core::ed_gen2(),
+        "Leave the current function or method and set its result, read by the caller with `|> @var`.",
+        "",
+        "using <gen 2026>\n:+ M def\n  :. twice n def\n    $( @n * 2 ) -> @t\n    return @t\n  done\ndone\n+> M m\n.> m twice 21 |> @v\n~> @v\n:- m\n", "42\n")
+
+    syntax_core::add_bad(r, s, "oop.err.abstract", "oop", "abstract", "<abstract method in a plain class>", syntax_core::ed_gen2(),
+        "`:. m abstract` is only valid in `abstract` classes and interfaces.",
+        "",
+        "using <gen 2026>\n:+ P def\n  :. m abstract\ndone\n")
+end

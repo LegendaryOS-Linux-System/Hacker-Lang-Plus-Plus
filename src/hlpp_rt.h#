@@ -123,6 +123,12 @@ pub fn quick_eval(vm: hlpp_vm::VM, name: string, raw_arg: string) -> QR is
         return qr(to_string(l))
     end
     if name == "trim" is return qr(a) end
+    if name == "ascii" is return qr(hlpp_text::ascii_only(a)) end
+    if name == "cd" is
+        if !fs_is_dir(a) is return QR { known: true, out: "", code: 1, raw: true } end
+        fs_chdir(a)
+        return QR { known: true, out: "", code: 0, raw: true }
+    end
     if name == "rev" is return qr(rev_str_fast(a)) end
     if name == "repeat" is
         let sp: [string] = hlpp_text::split_last(a)

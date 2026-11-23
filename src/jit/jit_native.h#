@@ -1,11 +1,255 @@
+use "hlib -> cranelift"
+mod hlpp_sys
 mod hlpp_vm
 mod jit_ir
 mod jit_exec
+mod jit_clif
 
-pub fn available() -> bool is return false end
+extern static [c] is
+    fn malloc(size: int) -> int
+    fn free(ptr: int)
+end
 
-pub fn reason() -> string is return "emitter CLIF gotowy (hlpp jit --clif), brak powiązania wykonawcy natywnego z VM" end
+;; ── memory layout of a region block ─────────────────────────────────────────
+;; [ regs: n_regs slots | rtypes: home_base+1 slots | cw: len+1 | cr: len+1 | status: 2 slots (last_exit, ticks) ]
+fn n_regs(rg: jit_ir::Region) -> int is
+    let a: int = jit_ir::home_base() + rg.ntemps + 2
+    let b: int = array_len(rg.regs) + 1
+    if b > a is return b end
+    return a
+end
 
+fn off_rt(rg: jit_ir::Region) -> int is
+    return n_regs(rg) * 8
+end
+
+fn off_cw(rg: jit_ir::Region) -> int is
+    return off_rt(rg) + (jit_ir::home_base() + 1) * 8
+end
+
+fn off_cr(rg: jit_ir::Region) -> int is
+    return off_cw(rg) + (array_len(rg.cw) + 1) * 8
+end
+
+fn off_st(rg: jit_ir::Region) -> int is
+    return off_cr(rg) + (array_len(rg.cr) + 1) * 8
+end
+
+fn block_size(rg: jit_ir::Region) -> int is
+    return off_st(rg) + 16
+end
+
+;; ── availability ────────────────────────────────────────────────────────────
+pub fn available() -> bool is
+    let h: int = cl_jit_new()
+    if h == 0 is return false end
+    cl_jit_free(h)
+    return true
+end
+
+pub fn reason() -> string is
+    if available() is return "" end
+    return "cranelift nie obsługuje tego procesora (cl_jit_new zwróciło 0)"
+end
+
+pub fn triple() -> string is
+    let h: int = cl_jit_new()
+    if h == 0 is return "" end
+    let t: string = cl_jit_triple(h)
+    cl_jit_free(h)
+    return t
+end
+
+;; module handle, created lazily; false = native tier unusable for this VM
+fn ensure_module(vm: hlpp_vm::VM) -> bool is
+    if vm.nat_off is return false end
+    if vm.nat_jit != 0 is return true end
+    let h: int = cl_jit_new()
+    if h == 0 is
+        vm.nat_off = true
+        vm.nat_why = "cranelift nie obsługuje tego procesora"
+        return false
+    end
+    vm.nat_jit = h
+    return true
+end
+
+;; release the machine code of every region (called when the VM finishes)
+pub fn shutdown(vm: hlpp_vm::VM) is
+    let mut i: int = 0
+    while i < array_len(vm.jit_regions) is
+        let rg: jit_ir::Region = vm.jit_regions[i]
+        if rg.native != 0 is
+            free(rg.native)
+            rg.native = 0
+        end
+        i += 1
+    end
+    if vm.nat_jit != 0 is
+        cl_jit_free(vm.nat_jit)
+        vm.nat_jit = 0
+    end
+end
+
+;; ── compilation ─────────────────────────────────────────────────────────────
+fn try_define(vm: hlpp_vm::VM, name: string, text: string) -> string is
+    return cl_define_clif(vm.nat_jit, name, text)
+end
+
+;; true = region has a native function + memory block
+pub fn compile(vm: hlpp_vm::VM, rg: jit_ir::Region) -> bool is
+    if !ensure_module(vm) is
+        rg.why = vm.nat_why
+        return false
+    end
+    vm.nat_seq += 1
+    let name: string = "hlpp_r" + to_string(rg.entry_pc) + "_" + to_string(vm.nat_seq)
+    let mut err: string = try_define(vm, name, jit_clif::emit(rg, name))
+    if string_len(err) > 0 is
+        ;; the register-allocated emitter failed: retry with the plain memory emitter
+        vm.nat_seq += 1
+        let name2: string = "hlpp_m" + to_string(rg.entry_pc) + "_" + to_string(vm.nat_seq)
+        err = try_define(vm, name2, jit_clif::emit_mem(rg, name2))
+        if string_len(err) > 0 is
+            rg.why = "cranelift: " + err
+            return false
+        end
+        rg.native_name = name2
+    else is
+        rg.native_name = name
+    end
+    let size: int = block_size(rg)
+    let blk: int = malloc(size)
+    if blk == 0 is
+        rg.why = "brak pamięci na bufor regionu"
+        return false
+    end
+    ptr_zero(blk, size)
+    rg.native = blk
+    return true
+end
+
+;; ── execution ───────────────────────────────────────────────────────────────
+;; perform the print call-out of IR instruction `ci` (values come from the native block)
+fn callout(vm: hlpp_vm::VM, rg: jit_ir::Region, ci: int) is
+    let b: int = ci * 6
+    let op: int = rg.code[b]
+    let a: int = rg.code[b + 2]
+    let blk: int = rg.native
+    if op == jit_ir::j_printreg() is
+        hlpp_sys::outln(to_string(ptr_read_i64(blk, a * 8)))
+    else if op == jit_ir::j_printlit() is
+        hlpp_sys::outln(vm.p.lits[a])
+    else if op == jit_ir::j_printvar() is
+        hlpp_sys::outln(hlpp_vm::get_var(vm, a))
+    else if op == jit_ir::j_printfmt() is
+        let mut r: [int] = []
+        let mut h: int = 0
+        while h < rg.nhome is
+            r = array_push(r, ptr_read_i64(blk, h * 8))
+            h += 1
+        end
+        hlpp_sys::outln(jit_exec::fmt_text(vm, rg, r, a))
+    end
+end
+
+;; run the region natively; returns the pc where tier 0 resumes (like jit_exec::run)
+pub fn run_native(vm: hlpp_vm::VM, rg: jit_ir::Region) -> int is
+    let blk: int = rg.native
+    let p_rt: int = blk + off_rt(rg)
+    let p_cw: int = blk + off_cw(rg)
+    let p_cr: int = blk + off_cr(rg)
+    let p_st: int = blk + off_st(rg)
+    let wsp0: int = vm.wsp
+    let rcsp0: int = vm.rcsp
+    ;; load homes
+    let mut h: int = 0
+    while h < rg.nhome is
+        let slot: int = rg.home_slot[h]
+        if rg.home_read[h] == 1 is
+            ptr_write_i64(blk, h * 8, vm.ni[slot])
+            ptr_write_i64(p_rt, h * 8, vm.vt[slot])
+        else is
+            ptr_write_i64(blk, h * 8, 0)
+            ptr_write_i64(p_rt, h * 8, 0)
+        end
+        h += 1
+    end
+    if rg.kind == 1 is ptr_write_i64(p_cw, 0, vm.wcnt[wsp0 - 1]) end
+    if rg.kind == 2 is ptr_write_i64(p_cr, 0, vm.rcnt[rcsp0 - 1]) end
+    ptr_write_i64(p_st, 0, vm.last_exit)
+    ptr_write_i64(p_st, 8, 0)
+    ;; call, servicing call-outs until the region exits
+    let mut start: int = 0
+    let mut xi: int = 0 - 1
+    let mut calls: int = 0
+    while xi < 0 is
+        let args: List_Int = List_Int_new()
+        List_Int_push(args, blk)
+        List_Int_push(args, p_rt)
+        List_Int_push(args, p_cw)
+        List_Int_push(args, p_cr)
+        List_Int_push(args, p_st)
+        List_Int_push(args, start)
+        let r: int = cl_call_i(vm.nat_jit, rg.native_name, args)
+        List_Int_free(args)
+        let cerr: string = cl_last_error(vm.nat_jit)
+        if string_len(cerr) > 0 is
+            if calls == 0 is
+                ;; nothing was executed yet: demote the region to tier 1 and let the IR interpreter run it
+                rg.native_state = 2
+                rg.why = "cranelift: " + cerr
+                return jit_exec::run(vm, rg)
+            end
+            hlpp_vm::fail(vm, "[jit] błąd wywołania kodu natywnego: " + cerr)
+            return vm.pc
+        end
+        calls += 1
+        if r >= 0 is
+            xi = r
+        else is
+            let ci: int = 0 - r - 1
+            callout(vm, rg, ci)
+            start = ci + 1
+        end
+    end
+    ;; rebuild VM state from the native block
+    let mut rr: [int] = []
+    let mut rt: [int] = []
+    let mut k: int = 0
+    while k < rg.nhome is
+        rr = array_push(rr, ptr_read_i64(blk, k * 8))
+        rt = array_push(rt, ptr_read_i64(p_rt, k * 8))
+        k += 1
+    end
+    let mut cw: [int] = []
+    let mut k2: int = 0
+    while k2 < array_len(rg.cw) is
+        cw = array_push(cw, ptr_read_i64(p_cw, k2 * 8))
+        k2 += 1
+    end
+    let mut cr: [int] = []
+    let mut k3: int = 0
+    while k3 < array_len(rg.cr) is
+        cr = array_push(cr, ptr_read_i64(p_cr, k3 * 8))
+        k3 += 1
+    end
+    let lx: int = ptr_read_i64(p_st, 0)
+    rg.iters += ptr_read_i64(p_st, 8)
+    return jit_exec::leave(vm, rg, rr, rt, cw, cr, lx, xi, wsp0, rcsp0)
+end
+
+;; entry used by jit::at_header: tier 2 when possible, otherwise the tier-1 IR interpreter
 pub fn run_or_interp(vm: hlpp_vm::VM, rg: jit_ir::Region) -> int is
+    if rg.native_state == 0 is
+        if compile(vm, rg) is
+            rg.native_state = 1
+        else is
+            rg.native_state = 2
+        end
+    end
+    if rg.native_state == 1 is
+        return run_native(vm, rg)
+    end
     return jit_exec::run(vm, rg)
 end

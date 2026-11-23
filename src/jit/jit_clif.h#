@@ -239,7 +239,7 @@ fn emit_instr(cx: Cx, rg: jit_ir::Region, i: int) is
     else is
         ;; printreg / printlit / printfmt / printvar: the VM performs the instruction (call-out)
         let r: string = v(cx)
-        ln(cx, r + " = iconst.i32 " + to_string(0 - (i + 1)))
+        ln(cx, r + " = iconst.i64 " + to_string(0 - (i + 1)))
         ln(cx, "return " + r)
     end
 end
@@ -262,7 +262,7 @@ end
 
 pub fn emit_mem(rg: jit_ir::Region, name: string) -> string is
     let cx: Cx = Cx { out: "", nv: 5, nb: rg.n + 2 + rg.nex, xb: rg.n + 2 }
-    cx.out = "function %" + name + "(i64, i64, i64, i64, i64, i32) -> i32 system_v {\n"
+    cx.out = "function %" + name + "(i64, i64, i64, i64, i64, i64) -> i64 system_v {\n"
     ;; jump table: start ip -> block
     let mut targets: string = ""
     let mut i: int = 0
@@ -271,8 +271,10 @@ pub fn emit_mem(rg: jit_ir::Region, name: string) -> string is
         targets = targets + "block" + to_string(i + 1)
         i += 1
     end
-    cx.out = cx.out + "block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i32):\n"
-    ln(cx, "br_table v5, block" + to_string(rg.n + 1) + ", [" + targets + "]")
+    cx.out = cx.out + "block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):\n"
+    let ix: string = v(cx)
+    ln(cx, ix + " = ireduce.i32 v5")
+    ln(cx, "br_table " + ix + ", block" + to_string(rg.n + 1) + ", [" + targets + "]")
     let mut k: int = 0
     while k < rg.n is
         blk(cx, k + 1)
@@ -285,7 +287,7 @@ pub fn emit_mem(rg: jit_ir::Region, name: string) -> string is
     while e < rg.nex is
         blk(cx, cx.xb + e)
         let r: string = v(cx)
-        ln(cx, r + " = iconst.i32 " + to_string(e))
+        ln(cx, r + " = iconst.i64 " + to_string(e))
         ln(cx, "return " + r)
         e += 1
     end
@@ -564,7 +566,7 @@ fn semit(cx: Sx, rg: jit_ir::Region, i: int, nextlead: bool) is
             sl(cx, "store notrap aligned " + sget(cx, a) + ", v0+" + to_string(a * 8))
         end
         let r: string = sv(cx)
-        sl(cx, r + " = iconst.i32 " + to_string(0 - (i + 1)))
+        sl(cx, r + " = iconst.i64 " + to_string(0 - (i + 1)))
         sl(cx, "return " + r)
     end
     ;; fall through into the next instruction's block
@@ -625,8 +627,8 @@ pub fn emit(rg: jit_ir::Region, name: string) -> string is
         end
         i += 1
     end
-    cx.out = "function %" + name + "(i64, i64, i64, i64, i64, i32) -> i32 system_v {\n"
-    cx.out = cx.out + "block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i32):\n"
+    cx.out = "function %" + name + "(i64, i64, i64, i64, i64, i64) -> i64 system_v {\n"
+    cx.out = cx.out + "block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):\n"
     ;; entry stubs: load the persistent slots from memory, jump to the leader
     let mut stubs: [int] = []
     let mut targets: string = ""
@@ -641,7 +643,9 @@ pub fn emit(rg: jit_ir::Region, name: string) -> string is
         end
         m += 1
     end
-    sl(cx, "br_table v5, block" + to_string(n + 1) + ", [" + targets + "]")
+    let ix: string = sv(cx)
+    sl(cx, ix + " = ireduce.i32 v5")
+    sl(cx, "br_table " + ix + ", block" + to_string(n + 1) + ", [" + targets + "]")
     let stub_base: int = cx.nb
     cx.nb += array_len(stubs)
     let mut sI: int = 0
@@ -675,7 +679,7 @@ pub fn emit(rg: jit_ir::Region, name: string) -> string is
         cx.out = cx.out + "block" + to_string(cx.xb + e) + sparams(cx) + ":\n"
         sflush(cx)
         let r: string = sv(cx)
-        sl(cx, r + " = iconst.i32 " + to_string(e))
+        sl(cx, r + " = iconst.i64 " + to_string(e))
         sl(cx, "return " + r)
         e += 1
     end

@@ -1,7 +1,8 @@
 [package]
 -> name => hlpp
--> version => 0.1.0
--> description => Hacker Lang++ — bytecode VM for Hacker Lang with OOP, bit.io and .hlib support (LegendaryOS)
+-> version => 0.2.0
+-> description => Hacker Lang++ — interpreter bytecode + JIT (Cranelift) dla Hacker Lang z OOP, bit.io i .hlib (LegendaryOS)
+-> authors => ["LegendaryOS Team"]
 -> lang => h#
 
 [layout]
@@ -10,3 +11,15 @@
 [dependencies]
 -> colors => newest
 -> nidus => newest
+-> cranelift => newest
+
+[commands]
+-> build
+--> run => hlpp build.hl++
+--> description => Buduje hlpp ze zrodel H# (bit install + cranelift .hlib + hsharp compile)
+-> test
+--> run => hlpp build.hl++ -- test
+--> description => Testy: szablony w 3 trybach + spojnosc warstw JIT
+-> jit
+--> run => hlpp build.hl++ -- jit
+--> description => Pokazuje analize JIT dla templates/jit_bench.hl++

@@ -1,1 +1,75 @@
+// hsharp
+// hackerc
+// bit
+// cargo
 
+using <gen 2026>
+
+;; hlpp build.hl++                  -> buduje hlpp ze zrodel H# (dist/hlpp)
+;; hlpp build.hl++ -- cranelift     -> buduje TYLKO biblioteke cranelift (.hlib z fasada FFI)
+;; hlpp build.hl++ -- compile       -> kompiluje src/main.h# (zaklada, ze cranelift.hlib juz jest)
+;; hlpp build.hl++ -- test          -> testy: templates/ w 3 trybach (JIT / --no-native / --no-jit) + spojnosc warstw
+;; hlpp build.hl++ -- jit           -> analiza JIT (IR) dla templates/jit_bench.hl++
+;; hlpp build.hl++ -- check         -> sam typecheck zrodel H# (bez kompilacji)
+;; hlpp build.hl++ -- install       -> kopiuje dist/hlpp do /usr/bin/hlpp (sudo)
+;; hlpp build.hl++ -- clean         -> usuwa dist/
+;;
+;; Hacker Lang++ jest TYLKO interpretowany: tier 0 = bytecode VM, tier 1 = IR regionow, tier 2 = natywny
+;; kod z Cranelift generowany w pamieci w czasie dzialania programu. Nie ma kompilacji AOT.
+;;
+;; Cranelift pochodzi z biblioteki bit.io `cranelift` (HackerScript), wiazanej do H# przez API hlib:
+;;   use "hlib -> cranelift"      (zob. docs/JIT.md)
+;;
+;; Wymaga: H# (hsharp) z std w /usr/lib/HackerOS/H#, hackerc, bit, oraz cargo (tylko do zbudowania cranelift.hlib).
+;; Argument targetu mozna podac z "--" lub bez: `hlpp build.hl++ test` == `hlpp build.hl++ -- test`.
+
+;; `bit hlib build` robi tylko artefakt `ast`; H# potrzebuje natywnej fasady C-ABI, wiec wolamy hackerc z --ffi
+;; i wynik kladziemy tam, gdzie H# szuka bibliotek (~/.hackeros/libs/<nazwa>/current/.bit/out/)
+: build_cranelift def
+    % _cl = @HOME/.hackeros/libs/cranelift/current
+    >> hackerc hlib build @_cl/lib/mod.hcs -o @_cl/.bit/out/cranelift.hlib --ffi
+done
+
+? switch @ARG1
+| cranelift
+    ~> === Hacker Lang++: biblioteka cranelift (.hlib + fasada FFI) ===
+    > bit install
+    -- build_cranelift
+    ~> Gotowe: cranelift.hlib
+| compile
+    ~> === Hacker Lang++: kompilacja src/main.h# ===
+    > mkdir -p dist
+    > hsharp compile src/main.h# -o dist/hlpp --release
+    ~> Gotowe: dist/hlpp
+    > dist/hlpp version
+| check
+    ~> === Hacker Lang++: typecheck zrodel H# ===
+    > hsharp check src/main.h#
+| test
+    ~> === Hacker Lang++: testy ===
+    > dist/hlpp tests/run_examples.hlpp dist/hlpp
+    > dist/hlpp tests/jit_tiers.hlpp dist/hlpp
+    ~> (test roznicowy z referencyjnym hl: HL=/sciezka/do/hl hlpp tests/diff_vs_hl.hlpp "$HL" dist/hlpp)
+| jit
+    ~> === Hacker Lang++: analiza JIT ===
+    > dist/hlpp jit templates/jit_bench.hl++ --ir
+    > dist/hlpp --stats templates/jit_bench.hl++
+| install
+    ~> === Hacker Lang++: instalacja do /usr/bin/hlpp ===
+    ^> cp dist/hlpp /usr/bin/hlpp
+    ~> Gotowe: /usr/bin/hlpp
+| clean
+    ~> === Hacker Lang++: czyszczenie ===
+    > rm -rf dist
+| *
+    ~> === Hacker Lang++: build pelny (zrodla H# -> dist/hlpp) ===
+    ~> [1/3] zaleznosci bit.io: colors, nidus, cranelift
+    > bit install
+    ~> [2/3] cranelift.hlib (HackerScript -> C-ABI facade, wymaga cargo)
+    -- build_cranelift
+    ~> [3/3] hsharp compile src/main.h#
+    > mkdir -p dist
+    > hsharp compile src/main.h# -o dist/hlpp --release
+    ~> Gotowe: dist/hlpp
+    > dist/hlpp version
+done

@@ -86,6 +86,7 @@ pub fn leave(vm: hlpp_vm::VM, rg: jit_ir::Region, r: [int], rt: [int], cw: [int]
         k2 += 1
     end
     vm.rcsp = rbase + rd
+    if vm.last_exit != lx is hlpp_vm::set_dyn(vm, "_exit", to_string(lx), 2) end
     vm.last_exit = lx
     if flag == 1 is vm.flag = true end
     if flag == 0 is vm.flag = false end

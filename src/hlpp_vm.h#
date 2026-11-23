@@ -4,6 +4,7 @@ mod hlpp_map
 mod hlpp_ops
 mod hlpp_prog
 mod hlpp_sys
+mod jit_ir
 
 pub struct VM is
     pub p: hlpp_prog::Prog
@@ -80,6 +81,16 @@ pub struct VM is
     pub hot: [int]                  ;; backward-jump counters per instruction
     pub jit_state: [int]            ;; 0 cold, 1 traced, 2 rejected
     pub jit_on: bool
+    pub jit_thresh: int             ;; loop-header executions before a region is compiled
+    pub jit_regions: [jit_ir::Region]
+    pub jit_idx: [int]              ;; per instruction: index into jit_regions
+    pub jit_epoch: int              ;; bumped when a function is (re)defined (invalidates inlined calls)
+    pub jit_compiles: int
+    pub jit_rejects: int
+    pub nat_jit: int                ;; cranelift module handle (0 = not created yet)
+    pub nat_off: bool               ;; native tier unavailable / disabled
+    pub nat_seq: int                ;; unique suffix for native function names
+    pub nat_why: string             ;; why the native tier is off
     pub stats_ops: int
     pub libpaths: [string]
     pub loaded: hlpp_map::SMap      ;; imported library specs already loaded
@@ -116,7 +127,8 @@ pub fn new_vm(p: hlpp_prog::Prog) -> VM is
         fld_def: [], cur_cls: 0 - 1,
         obj_cls: [], obj_live: [], obj_free: [], obj_nfree: 0, ofields: hlpp_map::new(), ofv: [],
         ic_cls: [], ic_pc: [],
-        args: [], script: "", shell: "sh", win: false, hot: [], jit_state: [], jit_on: true, stats_ops: 0,
+        args: [], script: "", shell: "sh", win: false, hot: [], jit_state: [], jit_on: true, jit_thresh: 40, jit_regions: [], jit_idx: [], jit_epoch: 0, jit_compiles: 0, jit_rejects: 0,
+        nat_jit: 0, nat_off: false, nat_seq: 0, nat_why: "", stats_ops: 0,
         libpaths: [], loaded: hlpp_map::new(), depth_limit: 20000, obj_created: 0, trace: false,
         obj_fnames: [], obj_seq: [], lit_i: [], lit_k: [], chan_slots: [], depth: 0, ofv_free: [], kids: [], is_child: false, arena_slots: [], arena_scan: 0, sc: [0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1], cls_fields: [] }
     return vm
@@ -151,6 +163,7 @@ pub fn ensure_code(vm: VM) is
     while array_len(vm.hot) < n is
         vm.hot = array_push(vm.hot, 0)
         vm.jit_state = array_push(vm.jit_state, 0)
+        vm.jit_idx = array_push(vm.jit_idx, 0 - 1)
         vm.ic_cls = array_push(vm.ic_cls, 0 - 1)
         vm.ic_pc = array_push(vm.ic_pc, 0)
     end

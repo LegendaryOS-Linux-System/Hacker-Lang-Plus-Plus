@@ -1,7 +1,30 @@
+mod hlpp_vm
+mod jit
+
 pub fn available() -> bool is
-    return false
+    return jit::available()
 end
 
 pub fn status() -> string is
-    return "tier-1 bytecode VM; tier-2 cranelift: niedostępny (feature jit-cranelift wyłączony)"
+    return jit::status()
+end
+
+pub fn init(vm: hlpp_vm::VM) is
+    jit::init(vm)
+end
+
+pub fn at_header(vm: hlpp_vm::VM, pc: int, kind: int) -> bool is
+    return jit::at_header(vm, pc, kind)
+end
+
+pub fn analyze(vm: hlpp_vm::VM, show_ir: bool, show_clif: bool) -> string is
+    return jit::analyze(vm, show_ir, show_clif)
+end
+
+pub fn stats_line(vm: hlpp_vm::VM) -> string is
+    return jit::stats_line(vm)
+end
+
+pub fn shutdown(vm: hlpp_vm::VM) is
+    jit::shutdown(vm)
 end

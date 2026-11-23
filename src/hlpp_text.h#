@@ -43,6 +43,28 @@ pub fn from(s: string, a: int) -> string is
     return sub(s, a, string_len(s))
 end
 
+;; keep only 7-bit ASCII bytes (used by differential tests against the reference `hl`)
+pub fn ascii_only(s: string) -> string is
+    let bs: [int] = string_to_bytes(s)
+    let n: int = array_len(bs)
+    let mut out: string = ""
+    let mut st: int = -1
+    let mut i: int = 0
+    while i < n is
+        if bs[i] < 128 is
+            if st < 0 is st = i end
+        else is
+            if st >= 0 is
+                out = out + string_slice(s, st, i)
+                st = -1
+            end
+        end
+        i += 1
+    end
+    if st >= 0 is out = out + string_slice(s, st, n) end
+    return out
+end
+
 pub fn has(s: string, p: string) -> bool is
     return string_find(s, p) >= 0
 end

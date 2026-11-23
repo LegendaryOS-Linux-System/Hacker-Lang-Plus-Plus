@@ -79,7 +79,7 @@ pub fn field_set(vm: hlpp_vm::VM, id: int, f: string, v: string) is
     let mut idx: int = 0
     if array_len(vm.ofv_free) > 0 is
         idx = vm.ofv_free[array_len(vm.ofv_free) - 1]
-        vm.ofv_free = array_pop(vm.ofv_free)
+        array_pop(vm.ofv_free)
         vm.ofv[idx] = v
     else is
         idx = array_len(vm.ofv)
@@ -205,7 +205,7 @@ pub fn release_region(vm: hlpp_vm::VM, mark: int) is
     end
     while array_len(work) > 0 is
         let cur: int = work[array_len(work) - 1]
-        work = array_pop(work)
+        array_pop(work)
         let names: [string] = hlpp_text::words_by(vm.obj_fnames[cur], "\u{1}")
         let mut k: int = 0
         while k < array_len(names) is

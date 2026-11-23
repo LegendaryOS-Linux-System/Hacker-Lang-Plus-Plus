@@ -1,1 +1,475 @@
+use <mode:website>
 
+!! Strona Hacker Lang++ — napisana w HackerScript, tryb `use <mode:website>`.
+!! Budowanie:  hackerc website cmd/main.hcs -o dist    (dist/index.html + dist/app.js)
+!! Przyklady i wyjscia pochodza z templates/ i tests/expected/ (generowane skryptem, nie przepisywane recznie).
+
+
+
+style {
+    :root { --tlo: #0b0912; --panel: #14111f; --panel2: #1b1729; --linia: #2a2440; --tekst: #e8e6f2; --przygas: #9a95b3; --akcent: #38c8ff; --akcent2: #b07cff; --ok: #4ade80; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--tlo); color: var(--tekst); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; }
+    #app { max-width: 1040px; margin: 0 auto; padding: 0 20px 60px; }
+    header.top { padding: 34px 0 8px; }
+    header.top h1 { margin: 0; font-size: 2.1rem; letter-spacing: -0.02em; }
+    header.top h1 span { color: var(--akcent); }
+    header.top p { margin: 4px 0 0; color: var(--przygas); }
+    nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 26px; padding: 6px; background: var(--panel); border: 1px solid var(--linia); border-radius: 14px; }
+    .nav-link { color: var(--przygas); text-decoration: none; padding: 8px 14px; border-radius: 10px; font-size: .95rem; }
+    .nav-link:hover { color: var(--tekst); background: var(--panel2); }
+    .nav-link.active { color: #04202b; background: var(--akcent); font-weight: 600; }
+    h2 { font-size: 1.5rem; margin: 34px 0 10px; letter-spacing: -0.01em; }
+    h3 { margin: 0 0 6px; font-size: 1.05rem; }
+    p { margin: 8px 0; }
+    .lead { font-size: 1.15rem; color: var(--przygas); max-width: 62ch; }
+    .hero { padding: 26px 0 10px; }
+    .hero h2 { font-size: 2.3rem; margin-top: 8px; max-width: 20ch; line-height: 1.15; }
+    .odznaki { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+    .odznaka { border: 1px solid var(--linia); background: var(--panel); border-radius: 999px; padding: 4px 12px; font-size: .85rem; color: var(--przygas); }
+    .odznaka b { color: var(--akcent); font-weight: 600; }
+    .siatka { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 14px 0; }
+    .karta { background: var(--panel); border: 1px solid var(--linia); border-radius: 14px; padding: 16px 18px; }
+    .karta:hover { border-color: var(--akcent2); }
+    .karta p { color: var(--przygas); margin: 4px 0 0; font-size: .95rem; }
+    .tier { border-left: 4px solid var(--akcent); }
+    .tier.t1 { border-left-color: var(--akcent2); }
+    .tier.t2 { border-left-color: var(--ok); }
+    pre.kod { background: #07050d; border: 1px solid var(--linia); border-radius: 12px; padding: 14px 16px; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .86rem; line-height: 1.5; margin: 10px 0; white-space: pre; }
+    pre.wyj { border-color: #1f3a2a; color: #b7f5cf; }
+    code.in { background: var(--panel2); border-radius: 6px; padding: 1px 6px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .88em; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .93rem; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--linia); vertical-align: top; }
+    th { color: var(--przygas); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+    td.sk { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .86rem; color: var(--akcent); white-space: pre-wrap; }
+    .zakladki { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+    button.zak { background: var(--panel); color: var(--przygas); border: 1px solid var(--linia); border-radius: 10px; padding: 6px 12px; cursor: pointer; font-size: .85rem; font-family: inherit; }
+    button.zak:hover { color: var(--tekst); border-color: var(--akcent2); }
+    button.zak.aktywna { background: var(--akcent); color: #04202b; border-color: var(--akcent); font-weight: 600; }
+    .dwa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .uwaga { border: 1px solid #5a3b1a; background: #1d1409; border-radius: 12px; padding: 12px 16px; color: #f3d9b1; margin: 14px 0; }
+    .uwaga b { color: #ffb454; }
+    footer { margin-top: 50px; padding-top: 18px; border-top: 1px solid var(--linia); color: var(--przygas); font-size: .88rem; }
+    @media (max-width: 760px) { .dwa { grid-template-columns: 1fr; } .hero h2 { font-size: 1.7rem; } header.top h1 { font-size: 1.6rem; } }
+}
+
+let ex_nazwa = [
+    "hello.hl++",
+    "variables_types.hl++",
+    "functions.hl++",
+    "switch_demo.hl++",
+    "string_tools.hl++",
+    "fizzbuzz.hl++",
+    "fibonacci.hl++",
+    "primes.hl++",
+    "gcd_lcm.hl++",
+    "collatz.hl++",
+    "jit_bench.hl++",
+    "loops_and_math.hl++",
+    "oop_basic.hlpp",
+    "oop_counter.hlpp",
+    "oop_inheritance.hlpp",
+    "oop_bank.hlpp",
+    "import_demo.hl++",
+    "coreutils_demo.hl++",
+    "showcase.hl++"
+]
+
+let ex_kod = [
+    "using <gen 2026>\n;; hello.hl++ — najprostszy program Hacker Lang++\n;; uruchom: hlpp templates/hello.hl++\n\n% name = Hacker Lang++\n% year: int = 2026\n\n~> Witaj, @name!\n~> Gen @year — bytecode VM + JIT (Cranelift)",
+    "using <gen 2026>\n;; zmienne: bez typu, typowane, arytmetyka natywna $( ) i interpolacja\n\n% greeting = hello\n% count: int = 42\n% ratio: float = 2.5\n% active: bool = true\n% label: str = typed string\n\n~> greeting=@greeting count=@count ratio=@ratio active=@active label=@label\n\n$( @count * 2 ) -> @double\n$( @count + 8 ) -> @plus\n$( @count % 5 ) -> @rest\n$( (2 + 3) * 4 ) -> @paren\n~> double=@double plus=@plus rest=@rest paren=@paren\n\n;; wynik wyrazenia jako wartosc zmiennej\n% sum: int = $( 10 + 20 + 30 )\n~> sum=@sum\n\n;; zmienne zlozone: nazwa zmiennej z innej zmiennej\n% which = count\n~> @{which} = @count",
+    "using <gen 2026>\n;; funkcje: \": nazwa def ... done\", wywolanie \"-- nazwa\"; parametry przez zmienne _nazwa\n\n: square def\n    $( @_x * @_x ) -> @_out\ndone\n\n: sum_squares def\n    % _acc: int = 0\n    % _k: int = 1\n    ?~ @_k <= @_n\n        % _x = @_k\n        -- square\n        $( @_acc + @_out ) -> @_acc\n        $( @_k + 1 ) -> @_k\n    done\ndone\n\n: banner def\n    ~> == @_title ==\ndone\n\n% _title = Funkcje\n-- banner\n\n% _x: int = 12\n-- square\n~> 12^2 = @_out\n\n% _n: int = 10\n-- sum_squares\n~> suma kwadratow 1..10 = @_acc",
+    "using <gen 2026>\n;; switch: dopasowanie literalow, domyslne ramie \"*\"\n\n: describe def\n    ? switch @_code\n    | 200\n        ~> @_code OK\n    | 404\n        ~> @_code Not Found\n    | 500\n        ~> @_code Server Error\n    | *\n        ~> @_code nieznany kod\n    done\ndone\n\n% _code = 200\n-- describe\n% _code = 404\n-- describe\n% _code = 500\n-- describe\n% _code = 418\n-- describe\n\n% cmd = start\n? switch @cmd\n| start\n    ~> uruchamiam\n| stop\n    ~> zatrzymuje\n| *\n    ~> ???\ndone",
+    "using <gen 2026>\n;; funkcje szybkie \"::\" na napisach\n\n::upper hello world |> @u\n::lower HACKER LANG |> @l\n::len Hacker Lang++ |> @n\n::rev stressed |> @r\n::replace foo-bar-baz - _ |> @rp\n~> upper=@u lower=@l len=@n rev=@r replace=@rp\n\n::contains hacker-lang lang\n? ok\n    ~> zawiera \"lang\"\ndone\n::startswith hacker-lang hack\n? ok\n    ~> zaczyna sie od \"hack\"\ndone\n::endswith hacker-lang xyz\n? err\n    ~> nie konczy sie na \"xyz\"\ndone\n\n::repeat ab 3 |> @rep\n~> repeat=@rep\n::max 3 9 |> @mx\n::min 3 9 |> @mn\n::abs -17 |> @ab\n~> max=@mx min=@mn abs=@ab",
+    "using <gen 2026>\n;; klasyczny FizzBuzz 1..15: petla ?~ + zagniezdzony switch\n\n% i: int = 1\n?~ @i <= 15\n    $( @i % 3 ) -> @m3\n    $( @i % 5 ) -> @m5\n    ? switch @m3\n    | 0\n        ? switch @m5\n        | 0\n            ~> FizzBuzz\n        | *\n            ~> Fizz\n        done\n    | *\n        ? switch @m5\n        | 0\n            ~> Buzz\n        | *\n            ~> @i\n        done\n    done\n    $( @i + 1 ) -> @i\ndone",
+    "using <gen 2026>\n;; Fibonacci iteracyjnie — goraca petla trafia do JIT (tier 1 -> Cranelift)\n\n% a: int = 0\n% b: int = 1\n% n: int = 0\n% t: int = 0\n?~ @n < 80\n    $( @a + @b ) -> @t\n    % a = @b\n    % b = @t\n    $( @n + 1 ) -> @n\ndone\n~> fib(80) = @a",
+    "using <gen 2026>\n;; liczby pierwsze < 3000 dzieleniem probnym — zagniezdzone petle (regiony natywne)\n\n% n: int = 2\n% count: int = 0\n% last: int = 0\n?~ @n < 3000\n    % d: int = 2\n    % dd: int = 4\n    % prime: int = 1\n    ?~ @dd <= @n\n        $( @n % @d ) -> @r\n        ? switch @r\n        | 0\n            % prime = 0\n            % dd = @n + 1\n        done\n        $( @d + 1 ) -> @d\n        $( @d * @d ) -> @dd\n    done\n    ? switch @prime\n    | 1\n        $( @count + 1 ) -> @count\n        % last = @n\n    done\n    $( @n + 1 ) -> @n\ndone\n~> pierwszych: @count, ostatnia: @last",
+    "using <gen 2026>\n;; algorytm Euklidesa (NWD) i NWW dla kilku par\n\n: gcd def\n    % _x: int = @_a\n    % _y: int = @_b\n    % _t: int = 0\n    ?~ @_y > 0\n        $( @_x % @_y ) -> @_t\n        % _x = @_y\n        % _y = @_t\n    done\n    % _g = @_x\ndone\n\n% _a: int = 48\n% _b: int = 18\n-- gcd\n$( @_a * @_b / @_g ) -> @_l\n~> NWD(48,18)=@_g NWW=@_l\n\n% _a: int = 1071\n% _b: int = 462\n-- gcd\n~> NWD(1071,462)=@_g\n\n% _a: int = 17\n% _b: int = 5\n-- gcd\n~> NWD(17,5)=@_g",
+    "using <gen 2026>\n;; hipoteza Collatza: dlugosc ciagu dla 27 i 97 (dzielenie niedokladne => deoptymalizacja JIT, wynik ten sam)\n\n: collatz def\n    % _n: int = @_start\n    % _steps: int = 0\n    ?~ @_n > 1\n        $( @_n % 2 ) -> @_odd\n        ? switch @_odd\n        | 0\n            $( @_n / 2 ) -> @_n\n        | *\n            $( @_n * 3 + 1 ) -> @_n\n        done\n        $( @_steps + 1 ) -> @_steps\n    done\ndone\n\n% _start: int = 27\n-- collatz\n~> collatz(27) = @_steps krokow\n\n% _start: int = 97\n-- collatz\n~> collatz(97) = @_steps krokow",
+    "using <gen 2026>\n;; trzy gorace petle — po 40 iteracjach kazda trafia do JIT (tier 2: kod natywny z Cranelift)\n;; porownanie:  hlpp --no-jit templates/jit_bench.hl++   |   hlpp --stats templates/jit_bench.hl++\n;; analiza:     hlpp jit templates/jit_bench.hl++ --ir\n\n% i: int = 0\n% s: int = 0\n?~ @i < 200000\n    $( @s + @i * 2 ) -> @s\n    $( @i + 1 ) -> @i\ndone\n~> suma = @s\n\n% a: int = 0\n_300000 $( @a + 7 ) -> @a\n~> a = @a\n\n% x: int = 0\n% y: int = 0\n?~ @x < 400\n    % y = 0\n    ?~ @y < 400\n        $( @y + 1 ) -> @y\n    done\n    $( @x + 1 ) -> @x\ndone\n~> x=@x y=@y",
+    "using <gen 2026>\n% i = 0\n% s = 0\n?~ @i < 100000\n  $( @s + @i * 2 ) -> @s\n  $( @i + 1 ) -> @i\ndone\n~> sum=@s\n: hello def\n  ~> hello from a function\ndone\n-- hello",
+    "using <gen 2026>\n:+ Animal def\n  % name = \"?\"\n  % sound = \"...\"\n  :. speak def\n    /> echo \"@self.name says @self.sound\"\n  done\ndone\n:+ Dog < Animal def\n  % sound = \"woof\"\n  :. fetch def\n    /> echo \"@self.name fetches\"\n  done\ndone\n+> Dog rex\n% rex.name = \"Rex\"\n.> rex speak\n.> rex fetch\n:- rex",
+    "using <gen 2026>\n;; obiekt z polem i metodami z parametrami; dwa niezalezne obiekty\n\n:+ Counter def\n  % n = 0\n  :. inc by def\n    $( @self.n + @by ) -> @self.n\n  done\n  :. dec by def\n    $( @self.n - @by ) -> @self.n\n  done\n  :. show def\n    ~> n=@self.n\n  done\ndone\n\n+> Counter a\n+> Counter b\n.> a inc 5\n.> a inc 7\n.> b inc 100\n.> b dec 1\n.> a show\n.> b show\n:- a\n:- b",
+    "using <gen 2026>\n;; dziedziczenie: klasa potomna dostaje pola i metody rodzica\n\n:+ Shape def\n  % name = shape\n  % sides = 0\n  :. describe def\n    ~> @self.name ma @self.sides bokow\n  done\ndone\n\n:+ Triangle < Shape def\n  % name = trojkat\n  % sides = 3\ndone\n\n:+ Square < Shape def\n  % name = kwadrat\n  % sides = 4\n  :. area side def\n    $( @side * @side ) -> @a\n    ~> pole kwadratu o boku @side = @a\n  done\ndone\n\n+> Triangle t\n+> Square s\n.> t describe\n.> s describe\n.> s area 7\n:- t\n:- s",
+    "using <gen 2026>\n;; konto bankowe: stan, wplaty, wyplaty\n\n:+ Account def\n  % owner = ?\n  % balance = 0\n  :. deposit amount def\n    $( @self.balance + @amount ) -> @self.balance\n    ~> @self.owner wplata @amount => saldo @self.balance\n  done\n  :. withdraw amount def\n    $( @self.balance - @amount ) -> @self.balance\n    ~> @self.owner wyplata @amount => saldo @self.balance\n  done\ndone\n\n+> Account acc\n% acc.owner = Ala\n.> acc deposit 500\n.> acc deposit 250\n.> acc withdraw 100\n:- acc",
+    "using <gen 2026>\n;; import pliku z funkcjami: \"<< sciezka\" (wzgledem katalogu skryptu)\n<< lib/mathlib.hl++\n\n% _v: int = 14\n-- triple\n~> triple(14) = @_t\n\n% _v: int = 250\n% _lo: int = 0\n% _hi: int = 100\n-- clamp\n~> clamp(250, 0..100) = @_c\n\n% _v: int = -5\n-- clamp\n~> clamp(-5, 0..100) = @_c",
+    "using <gen 2026>\n;; wbudowane narzedzia \"/>\" (wieloplatformowe, bez zewnetrznych programow)\n\n% _dir = /tmp/hlpp_template_demo\n/> rm -rf @_dir\n/> mkdir -p @_dir\n/> touch @_dir/b.txt\n/> touch @_dir/a.txt\n/> touch @_dir/c.log\n\n~> pliki w katalogu:\n/> ls @_dir\n\n::exists @_dir/a.txt\n? ok\n    ~> a.txt istnieje\ndone\n::exists @_dir/nope.txt\n? err\n    ~> nope.txt nie istnieje\ndone\n\n/> rm -rf @_dir",
+    "using <gen 2026>\n;; showcase: przeglad jezyka Hacker Lang++ w jednym pliku\n;; (zmienne, arytmetyka, petle + JIT, funkcje, switch, napisy, komendy, OOP)\n\n~> --- zmienne i arytmetyka ---\n% name = Hacker Lang++\n% n: int = 6\n$( @n * 7 ) -> @answer\n~> @name: @n * 7 = @answer\n\n~> --- petla while (JIT) ---\n% i: int = 1\n% fact: int = 1\n?~ @i <= 10\n    $( @fact * @i ) -> @fact\n    $( @i + 1 ) -> @i\ndone\n~> 10! = @fact\n\n~> --- powtorzenie _N ---\n% k: int = 0\n_1000 $( @k + 2 ) -> @k\n~> k = @k\n\n~> --- funkcja ---\n: cube def\n    $( @_x * @_x * @_x ) -> @_out\ndone\n% _x: int = 5\n-- cube\n~> 5^3 = @_out\n\n~> --- switch ---\n% day = tue\n? switch @day\n| mon\n    ~> poniedzialek\n| tue\n    ~> wtorek\n| *\n    ~> inny dzien\ndone\n\n~> --- napisy ---\n::upper hacker |> @up\n::len @up |> @ln\n~> @up (@ln znakow)\n\n~> --- komenda zewnetrzna i status ---\n> true\n? ok\n    ~> true -> sukces\ndone\n> false\n? err\n    ~> false -> blad (kod @_exit)\ndone\n\n~> --- OOP ---\n:+ Greeter def\n  % who = swiat\n  :. hello def\n    ~> Czesc, @self.who!\n  done\ndone\n+> Greeter g\n.> g hello\n:- g"
+]
+
+let ex_wyj = [
+    "Witaj, Hacker Lang++!\nGen 2026 — bytecode VM + JIT (Cranelift)",
+    "greeting=hello count=42 ratio=2.5 active=true label=typed string\ndouble=84 plus=50 rest=2 paren=20\nsum=60\ncount = 42",
+    "== Funkcje ==\n12^2 = 144\nsuma kwadratow 1..10 = 385",
+    "200 OK\n404 Not Found\n500 Server Error\n418 nieznany kod\nuruchamiam",
+    "upper=HELLO WORLD lower=hacker lang len=13 rev=desserts replace=foo_bar_baz\ntrue\nzawiera \"lang\"\ntrue\nzaczyna sie od \"hack\"\nfalse\nnie konczy sie na \"xyz\"\nrepeat=ababab\nmax=9 min=3 abs=17",
+    "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz",
+    "fib(80) = 23416728348467685",
+    "pierwszych: 430, ostatnia: 2999",
+    "NWD(48,18)=6 NWW=144\nNWD(1071,462)=21\nNWD(17,5)=1",
+    "collatz(27) = 111 krokow\ncollatz(97) = 118 krokow",
+    "suma = 39999800000\na = 2100000\nx=400 y=400",
+    "sum=9999900000\nhello from a function",
+    "Rex says woof\nRex fetches",
+    "n=12\nn=99",
+    "trojkat ma 3 bokow\nkwadrat ma 4 bokow\npole kwadratu o boku 7 = 49",
+    "Ala wplata 500 => saldo 500\nAla wplata 250 => saldo 750\nAla wyplata 100 => saldo 650",
+    "triple(14) = 42\nclamp(250, 0..100) = 100\nclamp(-5, 0..100) = 0",
+    "pliki w katalogu:\na.txt\nb.txt\nc.log\na.txt istnieje\nnope.txt nie istnieje",
+    "--- zmienne i arytmetyka ---\nHacker Lang++: 6 * 7 = 42\n--- petla while (JIT) ---\n10! = 3628800\n--- powtorzenie _N ---\nk = 2000\n--- funkcja ---\n5^3 = 125\n--- switch ---\nwtorek\n--- napisy ---\nHACKER (6 znakow)\n--- komenda zewnetrzna i status ---\ntrue -> sukces\nfalse -> blad (kod 1)\n--- OOP ---\nCzesc, swiat!"
+]
+
+let syn_k = [
+    "using <gen 2026>",
+    "~> tekst @zmienna",
+    "% x = 5   |   % n: int = 5",
+    "$( @a + @b * 2 ) -> @c",
+    "> polecenie  |>  @zm",
+    "? ok   /   ? err",
+    "?~ @i < 10 ... done",
+    "_1000 $( @k + 1 ) -> @k",
+    "@ f in a b c ... done",
+    "? switch @x  |  | wartosc  |  | *",
+    "-- nazwa  (z : nazwa def ... done)",
+    ":+ Klasa [< Rodzic] def ... done",
+    ":. metoda par def ... done",
+    "+> Klasa obj   |   .> obj metoda arg   |   :- obj",
+    "/> narzedzie ...",
+    "::upper tekst  |>  @zm",
+    "<< sciezka/plik.hl++",
+    "@_exit   @ARGS   @ARG1   @ARGC",
+    "> exit 3"
+]
+
+let syn_o = [
+    "wybor dialektu: gen 2026 lub ROLLING (gen 1/2 tylko dla zgodnosci z hl)",
+    "wypisuje tekst, @zmienna jest interpolowana",
+    "zmienna, opcjonalnie z typem (int, float, bool, str)",
+    "arytmetyka calkowitoliczbowa; wynik laduje w zmiennej",
+    "uruchamia zewnetrzne polecenie; |> przechwytuje stdout",
+    "warunek na statusie OSTATNIEJ komendy (? ok / ? err)",
+    "petla while; goraca petla trafia do JIT",
+    "powtorz polecenie N razy (rowniez trafia do JIT)",
+    "petla po liscie slow",
+    "switch po wartosci; | * to ramie domyslne",
+    "funkcja i jej wywolanie; parametry przez zmienne _nazwa",
+    "klasa z dziedziczeniem, pola przez % pole = wartosc",
+    "metoda; parametry po nazwie metody; @self.pole",
+    "obiekt: utworz, wywolaj metode, usun",
+    "wbudowane coreutils (wieloplatformowe)",
+    "funkcje szybkie: upper lower len rev replace contains max min ...",
+    "import pliku z funkcjami",
+    "nowe w 0.2.0: kod wyjscia ostatniej komendy, wszystkie argumenty, argumenty skryptu",
+    "konczy skrypt z kodem wyjscia"
+]
+
+let bld_k = [
+    "bit install",
+    "hackerc hlib build ~/.hackeros/libs/cranelift/current/lib/mod.hcs -o ~/.hackeros/libs/cranelift/current/.bit/out/cranelift.hlib --ffi",
+    "hsharp compile src/main.h# -o dist/hlpp --release",
+    "hlpp build.hl++",
+    "hlpp build.hl++ test",
+    "hlpp build.hl++ jit"
+]
+
+let bld_o = [
+    "zaleznosci bit.io: colors, nidus, cranelift",
+    "biblioteka cranelift z natywna fasada C-ABI (wymaga cargo)",
+    "kompilacja interpretera ze zrodel H#",
+    "wszystko naraz (dist/hlpp)",
+    "testy: szablony w 3 trybach + spojnosc warstw",
+    "analiza JIT (IR) dla jit_bench"
+]
+
+let src_sum = "using <gen 2026>\n;; petla while: suma 0..99999 (goracy region -> JIT)\n% i: int = 0\n% sum: int = 0\n?~ @i < 100000\n    $( @sum + @i ) -> @sum\n    $( @i + 1 ) -> @i\ndone\n~> sum=@sum i=@i"
+let ir_text = "  $0 = @i ( read write )\n  $1 = @sum ( read write )\n  0   tick     w0   ;; guard x0\n  1   jgei     $0, #100000 -> 9\n  2   add      $1 = $1, $0   ;; guard x1\n  3   nop      \n  4   setx     \n  5   addi     $0 = $0, #1   ;; guard x2\n  6   nop      \n  7   setx     \n  8   jmp      -> 0\n  9   setx     \n  10  printfmt fmt#0\n  11  setx     \n  12  exit     x3"
+let clif_text = "function %region_3(i64, i64, i64, i64, i64, i64) -> i64 system_v {\nblock0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):\n    v6 = ireduce.i32 v5\n    br_table v6, block14, [block19, block14, block14, block14, block14, block14, block14, block14, block14, block14, block14, block20, block14]\nblock19:\n    v7 = load.i64 notrap aligned v0+0\n    v8 = load.i64 notrap aligned v0+8\n    v9 = load.i64 notrap aligned v2+0\n    v10 = load.i64 notrap aligned v2+8\n    v11 = load.i64 notrap aligned v3+0\n    v12 = load.i64 notrap aligned v4+0\n    v13 = load.i64 notrap aligned v4+8\n    jump block1(v7, v8, v9, v10, v11, v12, v13)\nblock20:\n    v14 = load.i64 notrap aligned v0+0\n    v15 = load.i64 notrap aligned v0+8\n    v16 = load.i64 notrap aligned v2+0\n    v17 = load.i64 notrap aligned v2+8\n    v18 = load.i64 notrap aligned v3+0\n    v19 = load.i64 notrap aligned v4+0\n    v20 = load.i64 notrap aligned v4+8\n    jump block12(v14, v15, v16, v17, v18, v19, v20)\nblock1(v21: i64, v22: i64, v23: i64, v24: i64, v25: i64, v26: i64, v27: i64):\n    v28 = icmp_imm slt v23, 1000000\n    brif v28, block21, block15(v21, v22, v23, v24, v25, v26, v27)\nblock21:\n    v29 = iadd_imm v23, 1\n    v30 = iadd_imm v27, 1\n    v31 = icmp_imm sge v21, 100000\n    brif v31, block10(v21, v22, v29, v24, v25, v26, v30), block3(v21, v22, v29, v24, v25, v26, v30)\nblock3(v32: i64, v33: i64, v34: i64, v35: i64, v36: i64, v37: i64, v38: i64):\n    v40 = icmp_imm slt v33, 1000000000000000000\n    v41 = icmp_imm sgt v33, -1000000000000000000\n    v42 = band v40, v41\n    ;; ... (dalej: guardy, magazynowanie zmiennych, wyjscia z regionu)"
+
+
+let nav_paths = ["/", "/jezyk", "/jit", "/przyklady", "/budowanie", "/testy"]
+let nav_names = ["Start", "Jezyk", "JIT", "Przyklady", "Budowanie", "Testy"]
+let nav_els = []
+let jit_btns = []
+let ex_btns = []
+
+!! zaznacza aktywny link nawigacji (podstawowy mostek nie ma nav_link)
+fun zaznacz(sciezka: Str) [
+    let i = 0
+    for el_nav in nav_els [
+        if nav_paths[i] == sciezka [
+            dom_attr(el_nav, "class", "nav-link active")
+        ] else [
+            dom_attr(el_nav, "class", "nav-link")
+        ]
+        i = i + 1
+    ]
+]
+
+!! ── pomocnicze ──────────────────────────────────────────────────────────────
+fun kod(rodzic, tekst: Str, klasa: Str) [
+    let p = child(rodzic, "pre", "")
+    dom_attr(p, "class", klasa)
+    dom_text(p, tekst)
+    end p
+]
+
+fun karta(rodzic, tytul: Str, tekst: Str, klasa: Str) [
+    let k = child(rodzic, "div", "")
+    dom_attr(k, "class", klasa)
+    child(k, "h3", tytul)
+    child(k, "p", tekst)
+    end k
+]
+
+fun odznaka(rodzic, glowny: Str, reszta: Str) [
+    let o = child(rodzic, "span", "")
+    dom_class(o, "odznaka")
+    child(o, "b", glowny)
+    child(o, "span", " " + reszta)
+]
+
+fun tabela(rodzic, kol1: Str, kol2: Str, lewa, prawa) [
+    let t = child(rodzic, "table", "")
+    let h = child(t, "tr", "")
+    child(h, "th", kol1)
+    child(h, "th", kol2)
+    let i = 0
+    for x in lewa [
+        let w = child(t, "tr", "")
+        let a = child(w, "td", x)
+        dom_class(a, "sk")
+        child(w, "td", prawa[i])
+        i = i + 1
+    ]
+]
+
+!! ── strony ──────────────────────────────────────────────────────────────────
+fun strona_start() [
+    zaznacz("/")
+    let out = route_outlet()
+    let hero = child(out, "section", "")
+    dom_class(hero, "hero")
+    child(hero, "p", "Hacker Lang++  0.2.0")
+    child(hero, "h2", "Skrypty jak w Hacker Lang. Petle jak w kompilatorze.")
+    let lead = child(hero, "p", "Hacker Lang++ (hlpp) uruchamia te same programy co hl, dodaje OOP i wieloplatformowe narzedzia. Jest tylko interpretowany: bytecode VM, a goraca petla zamienia sie w kod natywny generowany w pamieci przez Cranelift. Zadnej kompilacji AOT.")
+    dom_class(lead, "lead")
+    let od = child(hero, "div", "")
+    dom_class(od, "odznaki")
+    odznaka(od, "tier 0", "bytecode VM")
+    odznaka(od, "tier 1", "IR regionow + deoptymalizacja")
+    odznaka(od, "tier 2", "Cranelift (bit.io)")
+    odznaka(od, "OOP", "klasy, dziedziczenie")
+    odznaka(od, "0 AOT", "wszystko w czasie dzialania")
+    let s = child(out, "div", "")
+    dom_class(s, "siatka")
+    karta(s, "Bytecode VM", "Kompilator tworzy kod HLPB (podglad: hlpp dump plik), a petla dispatch wykonuje go instrukcja po instrukcji.", "karta")
+    karta(s, "JIT w trzech warstwach", "Po 40 iteracjach petla ?~ lub _N jest lowerowana do IR, a potem do CLIF i kompilowana przez Cranelift.", "karta")
+    karta(s, "Napisany w H#", "Caly interpreter to zrodla .h#. Cranelift wchodzi przez biblioteke bit.io i API hlib.", "karta")
+    karta(s, "Testy w Hacker Lang++", "Testy dymne, roznicowe i spojnosci warstw sa pisane w samym jezyku, nie w shellu.", "karta")
+    child(out, "h2", "Hello world")
+    kod(out, ex_kod[0], "kod")
+    kod(out, ex_wyj[0], "kod wyj")
+    let a = child(out, "p", "Chcesz zobaczyc wiecej? Wejdz w Przyklady — 19 dzialajacych programow z ich wyjsciem.")
+    dom_class(a, "lead")
+]
+
+fun strona_jezyk() [
+    zaznacz("/jezyk")
+    let out = route_outlet()
+    child(out, "h2", "Skladnia w pigulce")
+    let p = child(out, "p", "Gen 2026 to domyslny dialekt. Ponizej konstrukcje, ktore faktycznie dzialaja w tej wersji (sprawdzone na przykladach z zakladki Przyklady).")
+    dom_class(p, "lead")
+    tabela(out, "Skladnia", "Znaczenie", syn_k, syn_o)
+    child(out, "h2", "Czego jeszcze nie ma")
+    let u = child(out, "div", "")
+    dom_class(u, "uwaga")
+    dom_html(u, "<b>Warunki w petlach</b> porownuja operandy, nie wyrazenia: <code class=\"in\">?~ @d * @d &lt;= @n</code> nie jest poprawne — policz wynik do zmiennej i porownaj ja. Brak ogolnego <code class=\"in\">if</code>: sluza do tego <code class=\"in\">? ok</code>, <code class=\"in\">? err</code> i <code class=\"in\">? switch</code>.")
+]
+
+fun strona_jit() [
+    zaznacz("/jit")
+    let out = route_outlet()
+    child(out, "h2", "Jak dziala JIT")
+    let p = child(out, "p", "Hacker Lang++ nie ma trybu AOT. Program zawsze startuje w interpreterze, a o przejsciu do wyzszej warstwy decyduje licznik wejsc w naglowek petli.")
+    dom_class(p, "lead")
+    let s = child(out, "div", "")
+    dom_class(s, "siatka")
+    karta(s, "Tier 0 — bytecode VM", "Kompilator tworzy kod HLPB, VM wykonuje go instrukcja po instrukcji. Pracuje zawsze i jest punktem powrotu po deoptymalizacji.", "karta tier")
+    karta(s, "Tier 1 — region IR", "Petla (?~ lub _N) jest lowerowana do IR z guardami typu i zakresu, optymalizowana i wykonywana przez interpreter IR. Zlamany guard cofa wykonanie do bytecode.", "karta tier t1")
+    karta(s, "Tier 2 — Cranelift", "IR jest zamieniane na tekst CLIF, definiowane w module JIT i wywolywane jako kod natywny na buforze z malloc.", "karta tier t2")
+    child(out, "h2", "Przyklad: petla sumujaca")
+    kod(out, src_sum, "kod")
+    let z = child(out, "div", "")
+    dom_class(z, "zakladki")
+    jit_btns = []
+    let b1 = child(z, "button", "Region IR (tier 1)")
+    dom_attr(b1, "class", "zak aktywna")
+    dom_on(b1, "click", widok_ir)
+    jit_btns.push(b1)
+    let b2 = child(z, "button", "CLIF (tier 2)")
+    dom_attr(b2, "class", "zak")
+    dom_on(b2, "click", widok_clif)
+    jit_btns.push(b2)
+    let pre = kod(out, ir_text, "kod")
+    dom_attr(pre, "id", "widok-jit")
+    let n = child(out, "p", "Powyzsze to prawdziwe wyjscie komendy hlpp jit tests/jit/sum_loop.hlpp --ir --clif (skrocone).")
+    dom_class(n, "lead")
+    child(out, "h2", "Biblioteka cranelift przez hlib")
+    let t = child(out, "p", "Cranelift to biblioteka bit.io napisana w HackerScript. Jej .hlib niesie natywna fasade C-ABI, z ktorej H# wola funkcje przez API hlib:")
+    dom_class(t, "lead")
+    kod(out, "use \"hlib -> cranelift\"\n\nlet jit: int = cl_jit_new()\nlet err: string = cl_define_clif(jit, name, clif_text)\nlet r: int = cl_call_i(jit, name, args)   ;; args: List_Int, wynik i64", "kod")
+    child(out, "h2", "Przelaczniki")
+    tabela(out, "Opcja", "Efekt", ["hlpp --no-jit plik", "hlpp --no-native plik", "HLPP_NATIVE=0", "HLPP_JIT_THRESHOLD=N", "hlpp jit plik [--ir] [--clif]", "hlpp --stats plik"], ["tylko interpreter bytecode", "tiery 0 i 1, bez Cranelift", "to samo co --no-native, ze zmiennej srodowiskowej", "po ilu wejsciach w naglowek petla jest kompilowana (domyslnie 40)", "analiza: ktore petle sie kompiluja, IR i CLIF", "statystyki: instrukcje, czas, regiony natywne, deopty"])
+    child(out, "h2", "Pomiar")
+    let m = child(out, "p", "Petla 100 000 iteracji (templates/loops_and_math.hl++), jednorazowy przebieg w srodowisku testowym:")
+    dom_class(m, "lead")
+    tabela(out, "Tryb", "Wynik", ["--no-jit", "domyslny (tier 2)"], ["1 600 016 instrukcji VM, 50 ms", "633 instrukcje VM, 3 ms (petla poszla do Cranelift)"])
+    let u = child(out, "div", "")
+    dom_class(u, "uwaga")
+    dom_html(u, "<b>Znane ograniczenia.</b> Region JIT rozciaga sie poza petle, wiec gdy po niej jest druga petla ze zmienna jeszcze niezdefiniowana, pierwsza nie wchodzi do JIT (wynik jest poprawny, tylko wolniej). Liczby bliskie granicy zakresu (np. fib(90)) potrafia konczyc sie bledem — do naprawy.")
+]
+
+fun widok(i: Int) [
+    let pre = dom_get("widok-jit")
+    if i == 0 [
+        dom_text(pre, ir_text)
+    ] else [
+        dom_text(pre, clif_text)
+    ]
+    let k = 0
+    for b in jit_btns [
+        if k == i [
+            dom_attr(b, "class", "zak aktywna")
+        ] else [
+            dom_attr(b, "class", "zak")
+        ]
+        k = k + 1
+    ]
+]
+
+fun widok_ir() [ widok(0) ]
+fun widok_clif() [ widok(1) ]
+
+fun pokaz(i: Int) [
+    dom_text(dom_get("ex-nazwa"), ex_nazwa[i])
+    dom_text(dom_get("ex-kod"), ex_kod[i])
+    dom_text(dom_get("ex-wyj"), ex_wyj[i])
+    let k = 0
+    for b in ex_btns [
+        if k == i [
+            dom_attr(b, "class", "zak aktywna")
+        ] else [
+            dom_attr(b, "class", "zak")
+        ]
+        k = k + 1
+    ]
+]
+
+fun ex_0() [ pokaz(0) ]
+fun ex_1() [ pokaz(1) ]
+fun ex_2() [ pokaz(2) ]
+fun ex_3() [ pokaz(3) ]
+fun ex_4() [ pokaz(4) ]
+fun ex_5() [ pokaz(5) ]
+fun ex_6() [ pokaz(6) ]
+fun ex_7() [ pokaz(7) ]
+fun ex_8() [ pokaz(8) ]
+fun ex_9() [ pokaz(9) ]
+fun ex_10() [ pokaz(10) ]
+fun ex_11() [ pokaz(11) ]
+fun ex_12() [ pokaz(12) ]
+fun ex_13() [ pokaz(13) ]
+fun ex_14() [ pokaz(14) ]
+fun ex_15() [ pokaz(15) ]
+fun ex_16() [ pokaz(16) ]
+fun ex_17() [ pokaz(17) ]
+fun ex_18() [ pokaz(18) ]
+
+let ex_handlers = [ex_0, ex_1, ex_2, ex_3, ex_4, ex_5, ex_6, ex_7, ex_8, ex_9, ex_10, ex_11, ex_12, ex_13, ex_14, ex_15, ex_16, ex_17, ex_18]
+
+fun strona_przyklady() [
+    zaznacz("/przyklady")
+    let out = route_outlet()
+    child(out, "h2", "Przyklady")
+    let p = child(out, "p", "Kazdy program jest uruchamiany w testach w trzech trybach i porownywany bajt w bajt z zapisanym wyjsciem.")
+    dom_class(p, "lead")
+    let z = child(out, "div", "")
+    dom_class(z, "zakladki")
+    ex_btns = []
+    let i = 0
+    for n in ex_nazwa [
+        let b = child(z, "button", n)
+        if i == 0 [
+            dom_attr(b, "class", "zak aktywna")
+        ] else [
+            dom_attr(b, "class", "zak")
+        ]
+        dom_on(b, "click", ex_handlers[i])
+        ex_btns.push(b)
+        i = i + 1
+    ]
+    let h = child(out, "h3", ex_nazwa[0])
+    dom_attr(h, "id", "ex-nazwa")
+    let k = kod(out, ex_kod[0], "kod")
+    dom_attr(k, "id", "ex-kod")
+    child(out, "h3", "Wyjscie")
+    let w = kod(out, ex_wyj[0], "kod wyj")
+    dom_attr(w, "id", "ex-wyj")
+]
+
+fun strona_budowanie() [
+    zaznacz("/budowanie")
+    let out = route_outlet()
+    child(out, "h2", "Budowanie ze zrodel")
+    let p = child(out, "p", "Interpreter jest napisany w H#. Do zbudowania potrzebujesz hsharp, hackerc, bit oraz cargo (cargo tylko po to, by zbudowac biblioteke cranelift).")
+    dom_class(p, "lead")
+    kod(out, "hlpp build.hl++            # bit install + cranelift.hlib + hsharp compile -> dist/hlpp\nhlpp build.hl++ test       # testy\nhlpp build.hl++ jit        # analiza JIT\nhlpp build.hl++ cranelift  # tylko biblioteka cranelift", "kod")
+    child(out, "h2", "Co robi build.hl++ krok po kroku")
+    tabela(out, "Komenda", "Po co", bld_k, bld_o)
+    child(out, "h2", "Targety build.hl++")
+    tabela(out, "Target", "Opis", ["(domyslny)", "cranelift", "compile", "check", "test", "jit", "install", "clean"], ["pelny build: zaleznosci, cranelift, kompilacja", "tylko cranelift.hlib z fasada FFI", "tylko hsharp compile src/main.h#", "sam typecheck zrodel", "szablony w 3 trybach + spojnosc warstw JIT", "analiza JIT dla jit_bench", "kopiuje dist/hlpp do /usr/bin/hlpp (sudo)", "usuwa dist/"])
+    let u = child(out, "div", "")
+    dom_class(u, "uwaga")
+    dom_html(u, "<b>Uwaga:</b> pierwszy build biblioteki cranelift trwa kilka minut (kompilacja crate'ow Cranelift). Natywna biblioteka musi byc zbudowana dla tego samego triple'a, dla ktorego H# linkuje program.")
+]
+
+fun strona_testy() [
+    zaznacz("/testy")
+    let out = route_outlet()
+    child(out, "h2", "Testy w Hacker Lang++")
+    let p = child(out, "p", "Skrypty w tests/ sa napisane w samym jezyku. Zwracaja kod wyjscia 0 tylko gdy wszystko przechodzi.")
+    dom_class(p, "lead")
+    tabela(out, "Skrypt", "Co sprawdza", ["tests/run_examples.hlpp", "tests/jit_tiers.hlpp", "tests/diff_vs_hl.hlpp", "tests/show.hlpp"], ["kazdy szablon z templates/ w trzech trybach (JIT natywny, --no-native, --no-jit) vs tests/expected/", "programy z tests/jit/ daja to samo w trzech trybach, a wskazane petle maja region natywny", "porownanie z referencyjnym hl: stdout (podzbior ASCII) i kod wyjscia", "pokazuje roznice stdout/stderr hl vs hlpp dla jednego pliku"])
+    child(out, "h2", "Uruchamianie")
+    kod(out, "hlpp tests/run_examples.hlpp dist/hlpp\nhlpp tests/jit_tiers.hlpp dist/hlpp\nhlpp tests/diff_vs_hl.hlpp /sciezka/do/hl dist/hlpp\nHL=/sciezka/do/hl hlpp tests/show.hlpp plik.hl", "kod")
+]
+
+fun main() [
+    page_title("Hacker Lang++")
+    let root = app_root()
+    let h = child(root, "header", "")
+    dom_class(h, "top")
+    let t = child(h, "h1", "")
+    dom_html(t, "Hacker Lang<span>++</span>")
+    child(h, "p", "bytecode VM + JIT (Cranelift) + OOP — LegendaryOS")
+    let nav = child(root, "nav", "")
+    let i = 0
+    for p in nav_paths [
+        let a = child(nav, "a", nav_names[i])
+        dom_attr(a, "href", "#" + p)
+        dom_attr(a, "class", "nav-link")
+        nav_els.push(a)
+        i = i + 1
+    ]
+    let tresc = child(root, "main", "")
+    dom_attr(tresc, "id", "route-outlet")
+    let f = child(root, "footer", "")
+    dom_html(f, "Hacker Lang++ 0.2.0 — interpreter w H#, Cranelift z bit.io (hlib). Strona zbudowana w HackerScript (<code class=\"in\">use &lt;mode:website&gt;</code>).")
+    route("/", strona_start)
+    route("/jezyk", strona_jezyk)
+    route("/jit", strona_jit)
+    route("/przyklady", strona_przyklady)
+    route("/budowanie", strona_budowanie)
+    route("/testy", strona_testy)
+]

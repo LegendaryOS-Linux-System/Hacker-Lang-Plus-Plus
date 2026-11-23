@@ -293,10 +293,10 @@ fn comp_arith(ps: Ps, expr: string, assign: string, line: int) is
     end
     ;; unsupported syntax (**, <<, comparisons, ...): same fallback as hl — the shell evaluates it
     while array_len(p.code) > start is
-        p.code = array_pop(p.code)
+        array_pop(p.code)
     end
     while array_len(p.lines) * 4 > start is
-        p.lines = array_pop(p.lines)
+        array_pop(p.lines)
     end
     emit_str(p, t)
     hlpp_prog::emit(p, hlpp_ops::op_ashell(), 0, 0, 0)

@@ -18,7 +18,7 @@ pub fn default_threshold() -> int is return 40 end
 pub fn status() -> string is
     let mut s: string = "backend jit (domyślny): tier-0 bytecode VM + tier-1 region JIT (IR, deoptymalizacja)"
     if jit_native::available() is
-        s = s + " + tier-2 native (Cranelift)"
+        s = s + " + tier-2 native (Cranelift, " + jit_native::triple() + ")"
     else is
         s = s + "; tier-2 native: niedostępny (" + jit_native::reason() + ")"
     end
@@ -29,6 +29,11 @@ end
 pub fn init(vm: hlpp_vm::VM) is
     let e: string = string_lower(hlpp_sys::getenv("HLPP_JIT"))
     if e == "0" || e == "off" || e == "false" || e == "no" is vm.jit_on = false end
+    let nt: string = string_lower(hlpp_sys::getenv("HLPP_NATIVE"))
+    if nt == "0" || nt == "off" || nt == "false" || nt == "no" is
+        vm.nat_off = true
+        vm.nat_why = "wyłączone zmienną HLPP_NATIVE"
+    end
     let t: string = hlpp_sys::getenv("HLPP_JIT_THRESHOLD")
     if string_len(t) > 0 is
         let n: int = hlpp_text_int(t, vm.jit_thresh)
@@ -162,6 +167,7 @@ pub fn stats_line(vm: hlpp_vm::VM) -> string is
     let mut deopts: int = 0
     let mut iters: int = 0
     let mut live: int = 0
+    let mut nat: int = 0
     let mut i: int = 0
     while i < array_len(vm.jit_regions) is
         let rg: jit_ir::Region = vm.jit_regions[i]
@@ -169,7 +175,12 @@ pub fn stats_line(vm: hlpp_vm::VM) -> string is
         deopts += rg.deopts
         iters += rg.iters
         if rg.state == 1 is live += 1 end
+        if rg.native_state == 1 is nat += 1 end
         i += 1
     end
-    return "[jit] regiony: " + to_string(live) + " aktywnych / " + to_string(vm.jit_compiles) + " skompilowanych / " + to_string(vm.jit_rejects) + " odrzuconych; wejść: " + to_string(enters) + ", iteracji w JIT: " + to_string(iters) + ", deopt: " + to_string(deopts)
+    return "[jit] natywnych: " + to_string(nat) + "; regiony: " + to_string(live) + " aktywnych / " + to_string(vm.jit_compiles) + " skompilowanych / " + to_string(vm.jit_rejects) + " odrzuconych; wejść: " + to_string(enters) + ", iteracji w JIT: " + to_string(iters) + ", deopt: " + to_string(deopts)
+end
+
+pub fn shutdown(vm: hlpp_vm::VM) is
+    jit_native::shutdown(vm)
 end

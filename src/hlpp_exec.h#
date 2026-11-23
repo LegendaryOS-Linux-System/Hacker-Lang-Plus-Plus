@@ -9,9 +9,11 @@ mod hlpp_rt
 mod hlpp_oop
 mod hlpp_cu
 mod hlpp_load
+mod hlpp_jit
 
 fn setx(vm: hlpp_vm::VM, code: int) is
     vm.last_exit = code
+    hlpp_vm::set_dyn(vm, "_exit", to_string(code), 2)
 end
 
 fn lit_str(vm: hlpp_vm::VM, i: int) -> string is
@@ -648,10 +650,14 @@ pub fn run(vm: hlpp_vm::VM) is
         else if op == o_nend is
             op_nend(vm, a, b)
         else if op == o_whtick is
-            if vm.wcnt[vm.wsp - 1] >= wlimit is
-                hlpp_vm::fail(vm, "Pętla while: przekroczono limit 1000000 iteracji")
-            else is
-                vm.wcnt[vm.wsp - 1] += 1
+            let mut jw: bool = false
+            if vm.jit_on is jw = hlpp_jit::at_header(vm, pc, 1) end
+            if !jw is
+                if vm.wcnt[vm.wsp - 1] >= wlimit is
+                    hlpp_vm::fail(vm, "Pętla while: przekroczono limit 1000000 iteracji")
+                else is
+                    vm.wcnt[vm.wsp - 1] += 1
+                end
             end
         else if op == o_whinit is
             push_counter(vm, 0, 0)
@@ -686,12 +692,14 @@ pub fn run(vm: hlpp_vm::VM) is
             op_ret(vm)
         else if op == o_deffunc is
             hlpp_map::put(vm.fns, vm.p.lits[a], pc + 1)
+            vm.jit_epoch += 1
             vm.pc = b
             setx(vm, 0)
         else if op == o_defarena is
             let key: string = "::" + vm.p.lits[a]
             hlpp_map::put(vm.fns, key, pc + 1)
             hlpp_map::put(vm.arena_sz, key, arena_bytes(vm.p.lits[c]))
+            vm.jit_epoch += 1
             vm.pc = b
             setx(vm, 0)
         else if op == o_callarena is
@@ -730,10 +738,14 @@ pub fn run(vm: hlpp_vm::VM) is
             push_counter(vm, 1, a)
             setx(vm, 0)
         else if op == o_rptnext is
-            if vm.rcnt[vm.rcsp - 1] <= 0 is
-                vm.pc = a
-            else is
-                vm.rcnt[vm.rcsp - 1] -= 1
+            let mut jr: bool = false
+            if vm.jit_on is jr = hlpp_jit::at_header(vm, pc, 2) end
+            if !jr is
+                if vm.rcnt[vm.rcsp - 1] <= 0 is
+                    vm.pc = a
+                else is
+                    vm.rcnt[vm.rcsp - 1] -= 1
+                end
             end
         else if op == o_rptend is
             if vm.rcsp > 0 is vm.rcsp -= 1 end

@@ -1,1 +1,20 @@
+[package]
+-> name        => hlpp-website
+-> version     => 0.2.0
+-> description => Strona Hacker Lang++ napisana w HackerScript (use <mode:website>): router, style w pliku, przyklady z templates/
+-> lang        => HackerScript
+-> using       => 0.6
 
+[layout]
+-> cmd => cmd
+
+[default-build]
+-> profile => release
+
+[commands]
+-> build
+--> run => hackerc website cmd/main.hcs -o dist --minify
+--> description => Buduje strone do dist/ (index.html + app.js)
+-> dev
+--> run => hackerc website cmd/main.hcs -o dist --dev --watch
+--> description => Przebudowuje po zmianie zrodel (serwer: python3 -m http.server -d dist)

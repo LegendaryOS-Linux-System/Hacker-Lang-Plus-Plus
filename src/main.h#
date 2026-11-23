@@ -22,7 +22,7 @@ mod hlpp_diag
 mod hlpp_dump
 
 fn version() -> string is
-    return "0.1.0"
+    return "0.2.0"
 end
 
 fn usage() is
@@ -33,22 +33,31 @@ fn usage() is
     hlpp_sys::outln("  hlpp run <plik.hl> [argumenty...]  uruchom")
     hlpp_sys::outln("  hlpp check <plik.hl>               tylko kompilacja do bytecode (diagnostyka)")
     hlpp_sys::outln("  hlpp dump <plik.hl>                zdezasembluj bytecode HLPB")
+    hlpp_sys::outln("  hlpp jit <plik.hl> [--ir] [--clif] analiza JIT: które pętle się kompilują (IR / CLIF)")
     hlpp_sys::outln("  hlpp -e '<kod>'                    wykonaj fragment")
     hlpp_sys::outln("  hlpp repl                          interaktywna pętla")
     hlpp_sys::outln("  hlpp version | help")
     hlpp_sys::outln("")
     hlpp_sys::outln(colors::bold("Opcje:") + "  --trace  ślad instrukcji (stderr)   --stats  statystyki wykonania   --no-color")
+    hlpp_sys::outln("        --no-jit  tylko interpreter bytecode   --no-native  JIT bez tieru natywnego (Cranelift)")
+    hlpp_sys::outln(colors::bold("Tryby:") + "  interpreter bytecode (tier 0) + JIT (tier 1 IR, tier 2 Cranelift); bez AOT")
     hlpp_sys::outln("")
     hlpp_sys::outln(colors::bold("Gen:") + "  `using <gen 2026>` / `using <ROLLING>`;  zgodność z hl: `gen 1`, `gen 2`")
 end
 
-fn setup_vm(p: hlpp_prog::Prog, rest: [string]) -> hlpp_vm::VM is
+fn setup_vm(p: hlpp_prog::Prog, rest: [string], jopt: int) -> hlpp_vm::VM is
     let vm: hlpp_vm::VM = hlpp_vm::new_vm(p)
     vm.shell = hlpp_sys::shell_program()
     vm.win = hlpp_sys::is_windows()
     vm.args = rest
     vm.script = p.file
     vm.trace = hlpp_sys::has_env("HLPP_TRACE")
+    hlpp_jit::init(vm)
+    if jopt == 1 is vm.jit_on = false end
+    if jopt == 2 is
+        vm.nat_off = true
+        vm.nat_why = "wyłączone flagą --no-native"
+    end
     return vm
 end
 
@@ -57,12 +66,21 @@ fn export_args(vm: hlpp_vm::VM) is
     hlpp_vm::ensure_slots(vm)
     let n: int = array_len(vm.args)
     hlpp_vm::set_dyn(vm, "ARGC", to_string(n), 2)
+    hlpp_vm::set_dyn(vm, "_exit", "0", 2)
     let mut i: int = 0
     while i < n is
         hlpp_vm::set_dyn(vm, "ARG" + to_string(i + 1), vm.args[i], 1)
         i += 1
     end
     hlpp_vm::set_dyn(vm, "SCRIPT", vm.script, 1)
+    let mut all_args: string = ""
+    let mut ai: int = 0
+    while ai < n is
+        if ai > 0 is all_args = all_args + " " end
+        all_args = all_args + vm.args[ai]
+        ai += 1
+    end
+    hlpp_vm::set_dyn(vm, "ARGS", all_args, 1)
     ;; variables predefined by hl (Env::new) + Hacker Lang++ ones
     if vm.p.edition >= 1 is
         hlpp_vm::set_dyn(vm, "HL_VERSION", "gen 2026", 1)
@@ -82,7 +100,7 @@ fn compile_file(path: string, src: string) -> hlpp_prog::Prog is
     return p
 end
 
-fn cmd_run(path: string, rest: [string], stats: bool, trace: bool) -> int is
+fn cmd_run(path: string, rest: [string], stats: bool, trace: bool, jopt: int) -> int is
     if !hlpp_sys::is_file(path) is
         hlpp_diag::plain_error("nie znaleziono pliku '" + path + "'")
         return 2
@@ -91,7 +109,17 @@ fn cmd_run(path: string, rest: [string], stats: bool, trace: bool) -> int is
     let p: hlpp_prog::Prog = compile_file(path, src)
     if hlpp_diag::compile_errors(p, src) > 0 is return 2 end
     let main_end: int = hlpp_prog::here(p)
-    let vm: hlpp_vm::VM = setup_vm(p, rest)
+    ;; a leading "--" only separates script arguments from hlpp flags (like in hl)
+    let mut sargs: [string] = rest
+    if array_len(rest) > 0 && rest[0] == "--" is
+        sargs = []
+        let mut qi: int = 1
+        while qi < array_len(rest) is
+            sargs = array_push(sargs, rest[qi])
+            qi += 1
+        end
+    end
+    let vm: hlpp_vm::VM = setup_vm(p, sargs, jopt)
     if trace is vm.trace = true end
     export_args(vm)
     let t0: int = hlpp_sys::now_ms()
@@ -104,7 +132,9 @@ fn cmd_run(path: string, rest: [string], stats: bool, trace: bool) -> int is
         let ops: int = vm.stats_ops
         let objs: int = hlpp_oop::live_count(vm)
         hlpp_sys::err(colors::dim("[hlpp] " + to_string(ops) + " instrukcji, " + to_string(dt) + " ms, żywych obiektów: " + to_string(objs) + ", stos wywołań: " + to_string(vm.rsp)) + "\n")
+        if vm.jit_on is hlpp_sys::err(colors::dim(hlpp_jit::stats_line(vm)) + "\n") end
     end
+    hlpp_jit::shutdown(vm)
     return vm.exit_code
 end
 
@@ -133,22 +163,37 @@ fn cmd_dump(path: string) -> int is
     return 0
 end
 
+fn cmd_jit(path: string, show_ir: bool, show_clif: bool) -> int is
+    if !hlpp_sys::is_file(path) is
+        hlpp_diag::plain_error("nie znaleziono pliku '" + path + "'")
+        return 2
+    end
+    let src: string = hlpp_sys::read(path)
+    let p: hlpp_prog::Prog = compile_file(path, src)
+    if hlpp_diag::compile_errors(p, src) > 0 is return 1 end
+    let vm: hlpp_vm::VM = setup_vm(p, [], 0)
+    hlpp_sys::outln(hlpp_jit::status())
+    hlpp_sys::out(hlpp_jit::analyze(vm, show_ir, show_clif))
+    return 0
+end
+
 fn cmd_eval(code: string, stats: bool) -> int is
     let p: hlpp_prog::Prog = hlpp_prog::new_prog(0, "<-e>")
     p.src = code
     hlpp_comp::compile_chunk(p, code, true)
     if hlpp_diag::compile_errors(p, code) > 0 is return 1 end
     let main_end: int = hlpp_prog::here(p)
-    let vm: hlpp_vm::VM = setup_vm(p, [])
+    let vm: hlpp_vm::VM = setup_vm(p, [], 0)
     hlpp_exec::run(vm)
     if string_len(vm.err) > 0 is hlpp_diag::runtime_error(vm, code, main_end) end
+    hlpp_jit::shutdown(vm)
     return vm.exit_code
 end
 
 fn cmd_repl() -> int is
     hlpp_sys::outln(hlpp_diag::brand() + " " + colors::dim(version()) + colors::dim("  — :q kończy, wielolinijkowe bloki kończ `done`"))
     let p: hlpp_prog::Prog = hlpp_prog::new_prog(1, "<repl>")
-    let vm: hlpp_vm::VM = setup_vm(p, [])
+    let vm: hlpp_vm::VM = setup_vm(p, [], 0)
     vm.running = false
     let mut buf: string = ""
     let mut depth: int = 0
@@ -191,11 +236,14 @@ fn main() is
     let mut a: [string] = []
     let mut stats: bool = false
     let mut trace: bool = false
+    let mut jopt: int = 0
     let mut i: int = 1
     while i < array_len(all) is
         if all[i] == "--stats" is stats = true
         else if all[i] == "--trace" is trace = true
         else if all[i] == "--no-color" is colors::disable()
+        else if all[i] == "--no-jit" is jopt = 1
+        else if all[i] == "--no-native" is jopt = 2
         else is a = array_push(a, all[i]) end
         i += 1
     end
@@ -230,6 +278,21 @@ fn main() is
         else is
             code = cmd_dump(rest[0])
         end
+    else if cmd == "jit" is
+        if array_len(rest) < 1 is
+            hlpp_diag::plain_error("jit wymaga ścieżki pliku")
+            code = 2
+        else is
+            let mut sir: bool = false
+            let mut scl: bool = false
+            let mut q: int = 1
+            while q < array_len(rest) is
+                if rest[q] == "--ir" is sir = true end
+                if rest[q] == "--clif" is scl = true end
+                q += 1
+            end
+            code = cmd_jit(rest[0], sir, scl)
+        end
     else if cmd == "repl" is
         code = cmd_repl()
     else if cmd == "-e" is
@@ -250,10 +313,10 @@ fn main() is
                 r2 = array_push(r2, rest[j])
                 j += 1
             end
-            code = cmd_run(rest[0], r2, stats, trace)
+            code = cmd_run(rest[0], r2, stats, trace, jopt)
         end
     else is
-        code = cmd_run(cmd, rest, stats, trace)
+        code = cmd_run(cmd, rest, stats, trace, jopt)
     end
     hlpp_sys::flush_out()
     exit(code)
